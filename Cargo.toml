@@ -4,4 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy = "0.19"
+bevy = { version = "0.19", default-features = false, features = ["3d", "ui", "audio", "wav"] }
+
+[profile.share]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

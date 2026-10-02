@@ -3,20 +3,19 @@ use bevy::prelude::*;
 use crate::player::{LocalPlayer, Player};
 
 pub const ROAD_HALF_WIDTH: f32 = 13.0;
+pub(crate) const BOULDER_SIZE: Vec3 = Vec3::new(2.8, 1.5, 3.5);
 const VISIBLE_LENGTH: f32 = 300.0;
-const DASH_SPACING: f32 = 8.0;
-const POST_SPACING: f32 = 16.0;
+const BOULDER_SPACING: f32 = 3.0;
+const BOULDER_HALF_COUNT: i32 = 48;
+const BOULDER_COUNT: i32 = BOULDER_HALF_COUNT * 2 + 1;
 
 #[derive(Component)]
-pub(crate) struct StreetVisual;
+pub(crate) struct TerrainVisual;
 
 #[derive(Component)]
-pub(crate) struct LaneDash(i32);
+pub(crate) struct Boulder(pub i32);
 
-#[derive(Component)]
-pub(crate) struct WallPost(i32);
-
-/// Keep an actor's center far enough from the street edge for its body to fit.
+/// Keep an actor's center inside the boulder lined playfield.
 pub fn clamp_actor_x(x: f32, radius: f32) -> f32 {
     x.clamp(-ROAD_HALF_WIDTH + radius, ROAD_HALF_WIDTH - radius)
 }
@@ -28,9 +27,9 @@ pub fn setup(
 ) {
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::default().mesh().size(120.0, VISIBLE_LENGTH))),
-        MeshMaterial3d(materials.add(Color::srgb(0.035, 0.037, 0.039))),
+        MeshMaterial3d(materials.add(Color::srgb(0.065, 0.055, 0.046))),
         Transform::from_xyz(0.0, -0.04, 0.0),
-        StreetVisual,
+        TerrainVisual,
     ));
     commands.spawn((
         Mesh3d(
@@ -40,84 +39,74 @@ pub fn setup(
                     .size(ROAD_HALF_WIDTH * 2.0, VISIBLE_LENGTH),
             ),
         ),
-        MeshMaterial3d(materials.add(Color::srgb(0.095, 0.105, 0.107))),
-        Transform::from_xyz(0.0, 0.0, 0.0),
-        StreetVisual,
+        MeshMaterial3d(materials.add(Color::srgb(0.20, 0.15, 0.105))),
+        Transform::default(),
+        TerrainVisual,
     ));
 
-    let edge_mesh = meshes.add(Cuboid::new(0.18, 0.05, VISIBLE_LENGTH));
-    let edge_material = materials.add(Color::srgb(0.68, 0.41, 0.13));
-    let wall_mesh = meshes.add(Cuboid::new(0.5, 0.8, VISIBLE_LENGTH));
-    let wall_material = materials.add(Color::srgb(0.19, 0.16, 0.14));
-    for side in [-1.0, 1.0] {
-        commands.spawn((
-            Mesh3d(edge_mesh.clone()),
-            MeshMaterial3d(edge_material.clone()),
-            Transform::from_xyz(side * (ROAD_HALF_WIDTH - 0.09), 0.035, 0.0),
-            StreetVisual,
-        ));
-        commands.spawn((
-            Mesh3d(wall_mesh.clone()),
-            MeshMaterial3d(wall_material.clone()),
-            Transform::from_xyz(side * (ROAD_HALF_WIDTH + 0.25), 0.4, 0.0),
-            StreetVisual,
-        ));
-    }
-
-    let dash_mesh = meshes.add(Cuboid::new(0.12, 0.025, 2.8));
-    let dash_material = materials.add(Color::srgb(0.36, 0.31, 0.23));
-    for index in -18..=18 {
-        commands.spawn((
-            Mesh3d(dash_mesh.clone()),
-            MeshMaterial3d(dash_material.clone()),
-            Transform::from_xyz(0.0, 0.02, index as f32 * DASH_SPACING),
-            StreetVisual,
-            LaneDash(index),
-        ));
-    }
-
-    let post_mesh = meshes.add(Cuboid::new(0.8, 1.2, 0.8));
-    let cap_mesh = meshes.add(Cuboid::new(0.95, 0.09, 0.95));
-    let post_material = materials.add(Color::srgb(0.12, 0.13, 0.13));
-    let cap_material = materials.add(Color::srgb(0.52, 0.30, 0.10));
-    for index in -9..=9 {
+    let boulder_mesh = meshes.add(Cuboid::new(BOULDER_SIZE.x, BOULDER_SIZE.y, BOULDER_SIZE.z));
+    let boulder_material = materials.add(Color::srgb(0.18, 0.17, 0.15));
+    for index in -BOULDER_HALF_COUNT..=BOULDER_HALF_COUNT {
         for side in [-1.0, 1.0] {
-            let x = side * (ROAD_HALF_WIDTH + 0.35);
-            let z = index as f32 * POST_SPACING;
+            let variation = ((index * 17 + if side > 0.0 { 7 } else { 0 }).rem_euclid(5)) as f32;
+            let angle = (variation - 2.0) * 0.09;
+            let scale = Vec3::new(1.0 + variation * 0.07, 0.9 + variation * 0.08, 1.0);
+            let x_extent = (BOULDER_SIZE.x * scale.x * angle.cos().abs()
+                + BOULDER_SIZE.z * scale.z * angle.sin().abs())
+                * 0.5;
             commands.spawn((
-                Mesh3d(post_mesh.clone()),
-                MeshMaterial3d(post_material.clone()),
-                Transform::from_xyz(x, 0.6, z),
-                StreetVisual,
-                WallPost(index),
-            ));
-            commands.spawn((
-                Mesh3d(cap_mesh.clone()),
-                MeshMaterial3d(cap_material.clone()),
-                Transform::from_xyz(x, 1.23, z),
-                StreetVisual,
-                WallPost(index),
+                Mesh3d(boulder_mesh.clone()),
+                MeshMaterial3d(boulder_material.clone()),
+                Transform::from_xyz(
+                    side * (ROAD_HALF_WIDTH + x_extent),
+                    0.65 + variation * 0.06,
+                    index as f32 * BOULDER_SPACING,
+                )
+                .with_rotation(Quat::from_rotation_y(angle))
+                .with_scale(scale),
+                TerrainVisual,
+                Boulder(index),
             ));
         }
     }
 }
 
 pub fn follow_street(
-    players: Query<&Transform, (With<Player>, With<LocalPlayer>, Without<StreetVisual>)>,
-    mut visuals: Query<(&mut Transform, Option<&LaneDash>, Option<&WallPost>), With<StreetVisual>>,
+    players: Query<&Transform, (With<Player>, With<LocalPlayer>, Without<TerrainVisual>)>,
+    mut visuals: Query<(&mut Transform, Option<&Boulder>), With<TerrainVisual>>,
 ) {
     let Some(player) = players.iter().next() else {
         return;
     };
-    let dash_anchor = (player.translation.z / DASH_SPACING).floor() * DASH_SPACING;
-    let post_anchor = (player.translation.z / POST_SPACING).floor() * POST_SPACING;
-    for (mut transform, dash, post) in &mut visuals {
-        transform.translation.z = if let Some(dash) = dash {
-            dash_anchor + dash.0 as f32 * DASH_SPACING
-        } else if let Some(post) = post {
-            post_anchor + post.0 as f32 * POST_SPACING
-        } else {
-            player.translation.z
+    let center_segment = (player.translation.z / BOULDER_SPACING).floor() as i32;
+    for (mut transform, boulder) in &mut visuals {
+        transform.translation.z = match boulder {
+            Some(boulder) => boulder_segment(boulder.0, center_segment) as f32 * BOULDER_SPACING,
+            None => player.translation.z,
         };
+    }
+}
+
+fn boulder_segment(index: i32, center_segment: i32) -> i32 {
+    // Visible meshes keep their world position. Only a mesh beyond the pool's
+    // range wraps around to the far side of the camera.
+    let relative = (index - center_segment + BOULDER_HALF_COUNT).rem_euclid(BOULDER_COUNT)
+        - BOULDER_HALF_COUNT;
+    center_segment + relative
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nearby_boulders_do_not_shift_when_player_crosses_a_segment() {
+        for index in -BOULDER_HALF_COUNT + 1..=BOULDER_HALF_COUNT {
+            assert_eq!(boulder_segment(index, 0), boulder_segment(index, 1));
+        }
+        assert_eq!(
+            boulder_segment(-BOULDER_HALF_COUNT, 1),
+            BOULDER_HALF_COUNT + 1
+        );
     }
 }

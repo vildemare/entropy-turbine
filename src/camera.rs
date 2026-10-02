@@ -2,8 +2,33 @@ use bevy::prelude::*;
 
 use crate::player::{LocalPlayer, Player};
 
+pub const CAMERA_HEIGHT: f32 = 24.0;
+pub const CAMERA_BACK_OFFSET: f32 = 21.0;
+
 #[derive(Component)]
 pub struct FollowCamera;
+
+pub fn rear_limit(camera: &Camera, transform: &Transform, window: &Window) -> Option<f32> {
+    ground_z_at_viewport_fraction(camera, transform, window, 0.88)
+}
+
+pub fn ground_z_at_viewport_fraction(
+    camera: &Camera,
+    transform: &Transform,
+    window: &Window,
+    vertical_fraction: f32,
+) -> Option<f32> {
+    let viewport_point = Vec2::new(window.width() * 0.5, window.height() * vertical_fraction);
+    let ray = camera
+        .viewport_to_world(&GlobalTransform::from(*transform), viewport_point)
+        .ok()?;
+    let direction = *ray.direction;
+    if direction.y >= -0.0001 {
+        return None;
+    }
+    let distance = -ray.origin.y / direction.y;
+    (distance > 0.0).then_some(ray.origin.z + direction.z * distance)
+}
 
 pub fn follow_player(
     time: Res<Time>,
@@ -13,10 +38,12 @@ pub fn follow_player(
     let Some(player) = players.iter().next() else {
         return;
     };
-    let target = Vec3::new(0.0, 24.0, player.translation.z + 21.0);
     for mut camera in &mut cameras {
-        camera.translation = camera
-            .translation
-            .lerp(target, 1.0 - (-6.0 * time.delta_secs()).exp());
+        let centerline = camera.translation.z - CAMERA_BACK_OFFSET;
+        if player.translation.z < centerline {
+            let target_z = player.translation.z + CAMERA_BACK_OFFSET;
+            camera.translation.z +=
+                (target_z - camera.translation.z) * (1.0 - (-6.0 * time.delta_secs()).exp());
+        }
     }
 }
