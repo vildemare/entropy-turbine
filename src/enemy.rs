@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use bevy::{prelude::*, window::PrimaryWindow};
 
 use crate::{
+    attributes::ENEMY_BEHAVIOR,
     camera::{self, FollowCamera},
     combat::{self, Damage, Faction, Health, Lifetime, Projectile},
     game::{Phase, Session, Visuals},
@@ -11,32 +12,13 @@ use crate::{
     street::{self, Boulder},
 };
 
+pub use crate::attributes::EnemyKind;
+
 const MAX_ENEMIES: usize = 90;
 const COVER_WIDTH: f32 = 5.4;
 const RUBBLE_SIZE: Vec3 = Vec3::new(1.3, 0.8, 1.4);
 const FIELD_COVER_SIZE: Vec3 = Vec3::new(2.1, 1.0, 1.9);
-const RETREAT_SPEED: f32 = 6.0;
-const RETREAT_TIMEOUT: f32 = 3.5;
-const COVER_ENTRY_SPEED: f32 = 1.5;
-const COVER_EXIT_SPEED: f32 = 1.5;
-const SIGHT_RANGE: f32 = 33.0;
-const BURST_SHOTS: u8 = 3;
 pub const WAVES_PER_PHASE: u32 = 10;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum EnemyKind {
-    Scout,
-    Trooper,
-    Heavy,
-}
-
-fn shot_damage(kind: EnemyKind) -> u32 {
-    match kind {
-        EnemyKind::Scout => 150,
-        EnemyKind::Trooper => 200,
-        EnemyKind::Heavy => 300,
-    }
-}
 
 #[derive(Component)]
 pub struct EnemyReward {
@@ -46,12 +28,7 @@ pub struct EnemyReward {
 
 impl EnemyReward {
     pub fn points(&self) -> u32 {
-        let base = match self.kind {
-            EnemyKind::Scout => 1,
-            EnemyKind::Trooper => 2,
-            EnemyKind::Heavy => 4,
-        };
-        base + u32::from(self.hit_player)
+        self.kind.profile().reward_points + u32::from(self.hit_player)
     }
 }
 
@@ -270,7 +247,7 @@ pub fn place_covers(
         },
         Mesh3d(visuals.barricade_mesh.clone()),
         MeshMaterial3d(visuals.barricade_material.clone()),
-        Transform::from_xyz(x, 0.55, z),
+        Transform::from_xyz(street::centerline_x(z) + x, 0.55, z),
     ));
     for side in [-1.0, 1.0] {
         commands.spawn((
@@ -281,8 +258,12 @@ pub fn place_covers(
             },
             Mesh3d(visuals.rubble_mesh.clone()),
             MeshMaterial3d(visuals.rubble_material.clone()),
-            Transform::from_xyz(x + side * 2.6, RUBBLE_SIZE.y * 0.5, z - 0.15)
-                .with_scale(RUBBLE_SIZE),
+            Transform::from_xyz(
+                street::centerline_x(z - 0.15) + x + side * 2.6,
+                RUBBLE_SIZE.y * 0.5,
+                z - 0.15,
+            )
+            .with_scale(RUBBLE_SIZE),
         ));
     }
     // Leave the middle lane open while giving the player places to break
@@ -296,8 +277,12 @@ pub fn place_covers(
             },
             Mesh3d(visuals.rubble_mesh.clone()),
             MeshMaterial3d(visuals.rubble_material.clone()),
-            Transform::from_xyz(field_x, FIELD_COVER_SIZE.y * 0.5, z + offset)
-                .with_scale(FIELD_COVER_SIZE),
+            Transform::from_xyz(
+                street::centerline_x(z + offset) + field_x,
+                FIELD_COVER_SIZE.y * 0.5,
+                z + offset,
+            )
+            .with_scale(FIELD_COVER_SIZE),
         ));
     }
     director.group_number += 1;
@@ -339,7 +324,7 @@ pub fn spawn_groups(
             } else {
                 EnemyKind::Trooper
             };
-            let (hit_points, radius, height, speed, reload_duration) = enemy_stats(kind);
+            let profile = kind.profile();
             let slot_x = cover.translation.x + slot * 1.45;
             let start_x = match site.formation {
                 Formation::Row => slot_x,
@@ -353,7 +338,11 @@ pub fn spawn_groups(
                     0.0
                 };
             let side = if index % 2 == 0 { -1.0 } else { 1.0 };
-            let flank_x = street::clamp_actor_x(cover.translation.x + side * 4.3, radius);
+            let flank_x = street::clamp_actor_x(
+                cover.translation.x + side * 4.3,
+                cover.translation.z,
+                profile.radius,
+            );
             let enemy_entity = commands
                 .spawn((
                     Enemy {
@@ -365,40 +354,37 @@ pub fn spawn_groups(
                         } else {
                             Tactic::Direct
                         },
-                        radius,
-                        height,
+                        radius: profile.radius,
+                        height: profile.height,
                         cover_z: cover.translation.z,
                         slot_x,
                         flank_x,
                         hold_timer: 0.45 + director.random() * 0.45,
                         fire_timer: 0.2 + director.random() * 0.75,
                         attack_phase: AttackPhase::Burst,
-                        shots_left: BURST_SHOTS,
+                        shots_left: ENEMY_BEHAVIOR.burst_shots,
                         evade_direction: side,
                         sight_blocked: false,
-                        reload_duration,
+                        reload_duration: profile.reload_secs,
                     },
-                    Health(hit_points),
+                    Health(profile.health),
                     EnemyReward {
                         kind,
                         hit_player: false,
                     },
-                    MovementSpeed(speed),
-                    Transform::from_xyz(start_x, height, start_z),
+                    MovementSpeed(profile.move_speed),
+                    Transform::from_xyz(
+                        start_x + street::centerline_x(start_z)
+                            - street::centerline_x(cover.translation.z),
+                        profile.height,
+                        start_z,
+                    ),
                     GlobalTransform::default(),
                     Visibility::default(),
                 ))
                 .id();
             spawn_enemy_visual(&mut commands, &visuals, enemy_entity, kind);
         }
-    }
-}
-
-fn enemy_stats(kind: EnemyKind) -> (u32, f32, f32, f32, f32) {
-    match kind {
-        EnemyKind::Scout => (1, 0.44, 0.54, 3.7, 1.15),
-        EnemyKind::Trooper => (2, 0.56, 0.68, 3.0, 1.55),
-        EnemyKind::Heavy => (5, 0.73, 0.83, 2.1, 1.95),
     }
 }
 
@@ -443,9 +429,9 @@ pub fn spawn_reinforcements(
             } else {
                 EnemyKind::Scout
             };
-            let (hit_points, radius, height, speed, reload_duration) = enemy_stats(kind);
+            let profile = kind.profile();
             let side = if index % 2 == 0 { -1.0 } else { 1.0 };
-            let x = center_x + (index as f32 - 1.0) * 2.0;
+            let x = street::centerline_x(z) + center_x + (index as f32 - 1.0) * 2.0;
             let actor = commands
                 .spawn((
                     Enemy {
@@ -457,26 +443,26 @@ pub fn spawn_reinforcements(
                         } else {
                             Tactic::Straight
                         },
-                        radius,
-                        height,
+                        radius: profile.radius,
+                        height: profile.height,
                         cover_z: z,
                         slot_x: x,
                         flank_x: x,
                         hold_timer: 0.0,
                         fire_timer: 0.35 + director.random() * 0.6,
                         attack_phase: AttackPhase::Burst,
-                        shots_left: BURST_SHOTS,
+                        shots_left: ENEMY_BEHAVIOR.burst_shots,
                         evade_direction: side,
                         sight_blocked: false,
-                        reload_duration,
+                        reload_duration: profile.reload_secs,
                     },
-                    Health(hit_points),
+                    Health(profile.health),
                     EnemyReward {
                         kind,
                         hit_player: false,
                     },
-                    MovementSpeed(speed),
-                    Transform::from_xyz(x, height, z),
+                    MovementSpeed(profile.move_speed),
+                    Transform::from_xyz(x, profile.height, z),
                     GlobalTransform::default(),
                     Visibility::default(),
                 ))
@@ -487,11 +473,7 @@ pub fn spawn_reinforcements(
 }
 
 fn spawn_enemy_visual(commands: &mut Commands, visuals: &Visuals, actor: Entity, kind: EnemyKind) {
-    let size = match kind {
-        EnemyKind::Scout => 0.80,
-        EnemyKind::Trooper => 1.0,
-        EnemyKind::Heavy => 1.22,
-    };
+    let size = kind.profile().visual_scale;
     let coat = match kind {
         EnemyKind::Scout => &visuals.scout_material,
         EnemyKind::Trooper => &visuals.trooper_material,
@@ -610,7 +592,7 @@ pub fn move_enemies(
                 move_toward(
                     &mut transform.translation,
                     target,
-                    speed.0 * COVER_ENTRY_SPEED * dt,
+                    speed.0 * ENEMY_BEHAVIOR.cover_entry_speed_factor * dt,
                 );
                 if transform.translation.distance_squared(target) < 0.18 * 0.18 {
                     enemy.state = EnemyState::Holding;
@@ -631,14 +613,14 @@ pub fn move_enemies(
                 move_toward(
                     &mut transform.translation,
                     target,
-                    speed.0 * COVER_EXIT_SPEED * dt,
+                    speed.0 * ENEMY_BEHAVIOR.cover_exit_speed_factor * dt,
                 );
                 if transform.translation.distance_squared(target) < 0.18 * 0.18 {
                     enemy.state = EnemyState::Exiting;
                 }
             }
             EnemyState::Exiting => {
-                transform.translation.z += speed.0 * COVER_EXIT_SPEED * dt;
+                transform.translation.z += speed.0 * ENEMY_BEHAVIOR.cover_exit_speed_factor * dt;
                 if transform.translation.z > enemy.cover_z + 1.7 {
                     enemy.state = EnemyState::Advancing;
                 }
@@ -657,12 +639,16 @@ pub fn move_enemies(
                     let forward = if distance > 8.0 { 0.5 } else { -0.1 };
                     let direction = Vec3::new(enemy.evade_direction, 0.0, forward).normalize();
                     transform.translation += direction * speed.0 * dt;
-                    if transform.translation.x.abs() > street::ROAD_HALF_WIDTH - enemy.radius - 0.5
+                    if (transform.translation.x - street::centerline_x(transform.translation.z))
+                        .abs()
+                        > street::ROAD_HALF_WIDTH - enemy.radius - 0.5
                     {
                         enemy.evade_direction *= -1.0;
                     }
-                } else if distance > SIGHT_RANGE
-                    || distance > 5.5 && enemy.fire_timer > 0.0 && enemy.shots_left == BURST_SHOTS
+                } else if distance > ENEMY_BEHAVIOR.sight_range
+                    || distance > 5.5
+                        && enemy.fire_timer > 0.0
+                        && enemy.shots_left == ENEMY_BEHAVIOR.burst_shots
                 {
                     let direction = match enemy.tactic {
                         Tactic::Direct => horizontal.normalize_or_zero(),
@@ -676,14 +662,18 @@ pub fn move_enemies(
                     retreat.remaining -= dt;
                     transform.scale.y = 1.0;
                     transform.translation.y = enemy.height;
-                    transform.translation.x += retreat.side * RETREAT_SPEED * dt;
+                    transform.translation.x += retreat.side * ENEMY_BEHAVIOR.retreat_speed * dt;
                     transform.translation.z = transform.translation.z.min(retreat.rear_z);
                     transform.rotation =
                         Quat::from_rotation_y(retreat.side * std::f32::consts::FRAC_PI_2);
                 }
             }
         }
-        transform.translation.x = street::clamp_actor_x(transform.translation.x, enemy.radius);
+        transform.translation.x = street::clamp_actor_x(
+            transform.translation.x,
+            transform.translation.z,
+            enemy.radius,
+        );
     }
 }
 
@@ -714,9 +704,11 @@ pub fn separate_enemies(
                 Vec2::X
             };
             let shift = direction * ((minimum - distance) * 0.5);
-            a.translation.x = street::clamp_actor_x(a.translation.x + shift.x, enemy_a.radius);
+            a.translation.x =
+                street::clamp_actor_x(a.translation.x + shift.x, a.translation.z, enemy_a.radius);
             a.translation.z += shift.y;
-            b.translation.x = street::clamp_actor_x(b.translation.x - shift.x, enemy_b.radius);
+            b.translation.x =
+                street::clamp_actor_x(b.translation.x - shift.x, b.translation.z, enemy_b.radius);
             b.translation.z -= shift.y;
         }
     }
@@ -729,7 +721,11 @@ pub fn separate_enemies(
                 cover,
             );
         }
-        transform.translation.x = street::clamp_actor_x(transform.translation.x, enemy.radius);
+        transform.translation.x = street::clamp_actor_x(
+            transform.translation.x,
+            transform.translation.z,
+            enemy.radius,
+        );
     }
 }
 
@@ -797,7 +793,7 @@ pub fn shoot_enemies(
             enemy.fire_timer -= time.delta_secs();
             if enemy.fire_timer <= 0.0 {
                 enemy.attack_phase = AttackPhase::Burst;
-                enemy.shots_left = BURST_SHOTS;
+                enemy.shots_left = ENEMY_BEHAVIOR.burst_shots;
                 enemy.fire_timer = 0.1;
             }
             continue;
@@ -813,7 +809,8 @@ pub fn shoot_enemies(
         let destination = Vec3::new(player.translation.x, 0.75, player.translation.z);
         let direction = (destination - origin).normalize_or_zero();
         if direction == Vec3::ZERO
-            || origin.distance_squared(destination) > SIGHT_RANGE * SIGHT_RANGE
+            || origin.distance_squared(destination)
+                > ENEMY_BEHAVIOR.sight_range * ENEMY_BEHAVIOR.sight_range
         {
             if enemy.state == EnemyState::Advancing {
                 enemy.sight_blocked = false;
@@ -843,7 +840,7 @@ pub fn shoot_enemies(
             // cover. The first shot happens this frame.
             enemy.state = EnemyState::Advancing;
             enemy.attack_phase = AttackPhase::Burst;
-            enemy.shots_left = BURST_SHOTS;
+            enemy.shots_left = ENEMY_BEHAVIOR.burst_shots;
             enemy.fire_timer = 0.0;
             transform.scale.y = 1.0;
             transform.translation.y = enemy.height;
@@ -859,26 +856,28 @@ pub fn shoot_enemies(
         if enemy.fire_timer > 0.0 {
             continue;
         }
+        let weapon = reward
+            .map(|reward| reward.kind)
+            .unwrap_or(EnemyKind::Trooper)
+            .profile();
         commands.spawn((
             Projectile {
                 direction,
+                speed: weapon.shot_speed,
+                radius: weapon.shot_radius,
                 previous: start,
                 spent: false,
                 faction: Faction::Enemy,
                 owner: entity,
             },
-            Damage(shot_damage(
-                reward
-                    .map(|reward| reward.kind)
-                    .unwrap_or(EnemyKind::Trooper),
-            )),
+            Damage(weapon.shot_damage),
             Lifetime(2.5),
             Mesh3d(visuals.bullet_mesh.clone()),
             MeshMaterial3d(visuals.enemy_bullet_material.clone()),
             Transform::from_translation(start),
         ));
         let volume = (0.26 - origin.distance(destination) * 0.004).clamp(0.08, 0.26);
-        let speed = 0.94 + (BURST_SHOTS - enemy.shots_left) as f32 * 0.04;
+        let speed = 0.94 + (ENEMY_BEHAVIOR.burst_shots - enemy.shots_left) as f32 * 0.04;
         sound::play_game(&mut commands, sounds.enemy_shot(), volume, speed);
         enemy.engaged = true;
         enemy.shots_left -= 1;
@@ -916,7 +915,8 @@ pub fn cleanup_behind_camera(
         if let Some(retreat) = retreating {
             // Keep the retreat visible as the forward-only camera advances.
             transform.translation.z = transform.translation.z.min(enemy_cutoff - 1.0);
-            if transform.translation.x.abs() >= street::ROAD_HALF_WIDTH - enemy.radius - 0.15
+            if (transform.translation.x - street::centerline_x(transform.translation.z)).abs()
+                >= street::ROAD_HALF_WIDTH - enemy.radius - 0.15
                 || retreat.remaining <= 0.0
             {
                 commands.entity(entity).despawn();
@@ -924,9 +924,10 @@ pub fn cleanup_behind_camera(
             continue;
         }
         if transform.translation.z > enemy_cutoff {
-            let side = if transform.translation.x > 0.0 {
+            let local_x = transform.translation.x - street::centerline_x(transform.translation.z);
+            let side = if local_x > 0.0 {
                 1.0
-            } else if transform.translation.x < 0.0 {
+            } else if local_x < 0.0 {
                 -1.0
             } else if enemy.group_id.is_multiple_of(2) {
                 1.0
@@ -940,7 +941,7 @@ pub fn cleanup_behind_camera(
             commands.entity(entity).insert(Retreating {
                 side,
                 rear_z: enemy_cutoff - 1.0,
-                remaining: RETREAT_TIMEOUT,
+                remaining: ENEMY_BEHAVIOR.retreat_timeout,
             });
             removed.push(entity);
         }
@@ -1026,9 +1027,9 @@ mod tests {
 
     #[test]
     fn enemy_shot_damage_uses_player_health_scale() {
-        assert_eq!(shot_damage(EnemyKind::Scout), 150);
-        assert_eq!(shot_damage(EnemyKind::Trooper), 200);
-        assert_eq!(shot_damage(EnemyKind::Heavy), 300);
+        assert_eq!(EnemyKind::Scout.profile().shot_damage, 150);
+        assert_eq!(EnemyKind::Trooper.profile().shot_damage, 200);
+        assert_eq!(EnemyKind::Heavy.profile().shot_damage, 300);
     }
 
     #[test]
@@ -1051,6 +1052,8 @@ mod tests {
             .world_mut()
             .spawn((Projectile {
                 direction: Vec3::Z,
+                speed: 16.0,
+                radius: 0.17,
                 previous: Vec3::ZERO,
                 spent: false,
                 faction: Faction::Enemy,
@@ -1118,7 +1121,10 @@ mod tests {
             let center = sites.single(world).unwrap().translation;
             (center.x, center.z)
         };
-        assert_eq!((center_x, center_z), (planned.x, planned.z));
+        assert_eq!(
+            (center_x, center_z),
+            (street::centerline_x(planned.z) + planned.x, planned.z)
+        );
         assert_eq!(
             app.world()
                 .resource::<EncounterDirector>()
@@ -1132,6 +1138,8 @@ mod tests {
             .spawn((
                 Projectile {
                     direction: Vec3::NEG_Z,
+                    speed: 34.0,
+                    radius: 0.17,
                     previous: Vec3::new(x, 0.75, center_z + 3.0),
                     spent: false,
                     faction: Faction::Player,
@@ -1159,6 +1167,8 @@ mod tests {
             .spawn((
                 Projectile {
                     direction: Vec3::NEG_Z,
+                    speed: 34.0,
+                    radius: 0.17,
                     previous: field_position + Vec3::new(0.0, 0.25, 3.0),
                     spent: false,
                     faction: Faction::Player,
@@ -1216,7 +1226,7 @@ mod tests {
                 Retreating {
                     side: 1.0,
                     rear_z: 8.0,
-                    remaining: RETREAT_TIMEOUT,
+                    remaining: ENEMY_BEHAVIOR.retreat_timeout,
                 },
                 MovementSpeed(3.0),
                 Transform::from_xyz(0.0, 0.68, 8.0),
@@ -1245,7 +1255,7 @@ mod tests {
             hold_timer: 0.0,
             fire_timer: 0.8,
             attack_phase: AttackPhase::Burst,
-            shots_left: BURST_SHOTS,
+            shots_left: ENEMY_BEHAVIOR.burst_shots,
             evade_direction: 1.0,
             sight_blocked: false,
             reload_duration: 1.5,
@@ -1291,7 +1301,7 @@ mod tests {
 
         let flanker_state = app.world().get::<Enemy>(flanker).unwrap();
         assert_eq!(flanker_state.state, EnemyState::Advancing);
-        assert_eq!(flanker_state.shots_left, BURST_SHOTS - 1);
+        assert_eq!(flanker_state.shots_left, ENEMY_BEHAVIOR.burst_shots - 1);
         assert_eq!(
             app.world().get::<Enemy>(sheltered).unwrap().state,
             EnemyState::Holding
@@ -1329,7 +1339,7 @@ mod tests {
                     hold_timer: 0.0,
                     fire_timer: 0.0,
                     attack_phase: AttackPhase::Burst,
-                    shots_left: BURST_SHOTS,
+                    shots_left: ENEMY_BEHAVIOR.burst_shots,
                     evade_direction: -1.0,
                     sight_blocked: false,
                     reload_duration: 1.5,
@@ -1423,7 +1433,7 @@ mod tests {
                     hold_timer: 0.0,
                     fire_timer: 0.0,
                     attack_phase: AttackPhase::Burst,
-                    shots_left: BURST_SHOTS,
+                    shots_left: ENEMY_BEHAVIOR.burst_shots,
                     evade_direction: 1.0,
                     sight_blocked: false,
                     reload_duration: 1.5,

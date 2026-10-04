@@ -2,8 +2,9 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 
+use crate::attributes::GUNSLINGER_PLAYER;
 use crate::game::{Phase, Session};
-use crate::player::{Player, PlayerIntent, SHOOT_SPEED_FACTOR};
+use crate::player::{self, GunslingerWeapon, Player, PlayerIntent};
 
 const MODEL_PATH: &str = "models/toon_soldier.gltf";
 
@@ -143,7 +144,7 @@ pub fn bind_animations(
 
 pub fn animate_characters(
     animations: Option<Res<CharacterAnimations>>,
-    actors: Query<&PlayerIntent, With<Player>>,
+    actors: Query<(&PlayerIntent, &GunslingerWeapon), With<Player>>,
     mut players: Query<(
         &mut AnimationPlayer,
         &mut AnimationTransitions,
@@ -154,10 +155,11 @@ pub fn animate_characters(
         return;
     };
     for (mut player, mut transitions, mut driver) in &mut players {
-        let Ok(intent) = actors.get(driver.actor) else {
+        let Ok((intent, weapon)) = actors.get(driver.actor) else {
             continue;
         };
-        let desired = match (intent.movement.length_squared() > 0.001, intent.firing) {
+        let shooting = player::is_shooting(intent, weapon);
+        let desired = match (intent.movement.length_squared() > 0.001, shooting) {
             (false, false) => Motion::Idle,
             (true, false) => Motion::Run,
             (false, true) => Motion::IdleShoot,
@@ -175,8 +177,8 @@ pub fn animate_characters(
                 .play(&mut player, clip, Duration::from_millis(140))
                 .repeat();
         }
-        let speed_factor = if intent.firing {
-            SHOOT_SPEED_FACTOR
+        let speed_factor = if shooting {
+            GUNSLINGER_PLAYER.shoot_move_factor
         } else {
             1.0
         };
@@ -195,7 +197,10 @@ pub fn animate_characters(
 
 pub fn aim_upper_body(
     session: Res<Session>,
-    mut actors: Query<(&PlayerIntent, &mut Transform), (With<Player>, Without<UpperBodyAim>)>,
+    mut actors: Query<
+        (&PlayerIntent, &GunslingerWeapon, &mut Transform),
+        (With<Player>, Without<UpperBodyAim>),
+    >,
     mut torsos: Query<(&UpperBodyAim, &mut Transform), Without<Player>>,
 ) {
     if session.phase != Phase::Playing {
@@ -203,10 +208,10 @@ pub fn aim_upper_body(
     }
     const MAX_TORSO_TWIST: f32 = std::f32::consts::FRAC_PI_2;
     for (aim, mut torso) in &mut torsos {
-        let Ok((intent, mut actor)) = actors.get_mut(aim.actor) else {
+        let Ok((intent, weapon, mut actor)) = actors.get_mut(aim.actor) else {
             continue;
         };
-        if !intent.firing {
+        if !player::is_shooting(intent, weapon) {
             continue;
         }
         let mut target = intent.aim - actor.translation;

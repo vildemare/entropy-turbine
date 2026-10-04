@@ -1,15 +1,14 @@
 use bevy::prelude::*;
 use bevy::text::{FontSize, FontSource};
 use bevy::time::Virtual;
+use bevy::{asset::RenderAssetUsages, render::render_resource::PrimitiveTopology};
 
 use crate::{
+    attributes::{GUNSLINGER_PLAYER, GUNSLINGER_WEAPON},
     character::CharacterAsset,
     combat::{PointOrb, Projectile},
     enemy::{Cover, EncounterDirector, Enemy, WAVES_PER_PHASE},
-    player::{
-        self, GunslingerWeapon, HEALTH_UPGRADE, MAX_CAPACITY, MAX_HEALTH, MIN_RELOAD_WAIT_MS,
-        Player, PlayerProgression, PlayerStats, reload_wait_ms_for,
-    },
+    player::{self, GunslingerWeapon, Player, PlayerProgression, PlayerStats, reload_wait_ms_for},
     sound::{self, SoundBank},
 };
 
@@ -50,6 +49,7 @@ pub struct Visuals {
     pub enemy_brass_material: Handle<StandardMaterial>,
     pub enemy_visor_material: Handle<StandardMaterial>,
     pub bullet_mesh: Handle<Mesh>,
+    pub player_bullet_mesh: Handle<Mesh>,
     pub bullet_material: Handle<StandardMaterial>,
     pub enemy_bullet_material: Handle<StandardMaterial>,
     pub barricade_mesh: Handle<Mesh>,
@@ -105,6 +105,39 @@ pub struct ShopLabel(pub UpgradeKind);
 
 const PRICE_STEPS: [u32; 8] = [10, 12, 14, 18, 24, 32, 42, 50];
 
+fn player_bullet_mesh() -> Mesh {
+    // The pointed head faces local +Z. A second, translucent triangle fades
+    // backwards, so rotating the projectile also rotates its short trail.
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
+    mesh.insert_attribute(
+        Mesh::ATTRIBUTE_POSITION,
+        vec![
+            [0.0, 0.0, 0.55],
+            [0.23, 0.0, -0.22],
+            [-0.23, 0.0, -0.22],
+            [-0.16, 0.0, -0.22],
+            [0.16, 0.0, -0.22],
+            [0.0, 0.0, -1.35],
+        ],
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 1.0, 0.0]; 6]);
+    mesh.insert_attribute(
+        Mesh::ATTRIBUTE_COLOR,
+        vec![
+            [0.79, 0.88, 0.94, 1.0],
+            [0.70, 0.82, 0.91, 0.95],
+            [0.70, 0.82, 0.91, 0.95],
+            [0.55, 0.72, 0.84, 0.23],
+            [0.55, 0.72, 0.84, 0.23],
+            [0.55, 0.72, 0.84, 0.0],
+        ],
+    );
+    mesh
+}
+
 fn upgrade_price(purchases: u32) -> u32 {
     PRICE_STEPS[(purchases as usize).min(PRICE_STEPS.len() - 1)]
 }
@@ -117,14 +150,14 @@ fn offer(kind: UpgradeKind, progression: &PlayerProgression) -> (String, Option<
     let stats = progression.stats();
     match kind {
         UpgradeKind::Health => {
-            let available =
-                (stats.max_health < MAX_HEALTH).then(|| upgrade_price(progression.health_level));
+            let available = (stats.max_health < GUNSLINGER_PLAYER.max_health)
+                .then(|| upgrade_price(progression.health_level));
             (
                 if available.is_some() {
                     format!(
                         "MAX HEALTH   {} → {}",
                         stats.max_health,
-                        stats.max_health + HEALTH_UPGRADE
+                        stats.max_health + GUNSLINGER_PLAYER.health_per_upgrade
                     )
                 } else {
                     format!("MAX HEALTH   {}", stats.max_health)
@@ -133,8 +166,8 @@ fn offer(kind: UpgradeKind, progression: &PlayerProgression) -> (String, Option<
             )
         }
         UpgradeKind::Capacity => {
-            let available =
-                (stats.capacity < MAX_CAPACITY).then(|| upgrade_price(progression.capacity_level));
+            let available = (stats.capacity < GUNSLINGER_WEAPON.max_capacity)
+                .then(|| upgrade_price(progression.capacity_level));
             (
                 if available.is_some() {
                     format!(
@@ -149,7 +182,7 @@ fn offer(kind: UpgradeKind, progression: &PlayerProgression) -> (String, Option<
             )
         }
         UpgradeKind::Recharge => {
-            let available = (stats.reload_wait_ms > MIN_RELOAD_WAIT_MS)
+            let available = (stats.reload_wait_ms > GUNSLINGER_WEAPON.min_reload_wait_ms)
                 .then(|| upgrade_price(progression.reload_level));
             let next = reload_wait_ms_for(progression.reload_level + 1);
             (
@@ -195,7 +228,14 @@ pub fn setup(
         enemy_brass_material: materials.add(Color::srgb(0.58, 0.39, 0.13)),
         enemy_visor_material: materials.add(Color::srgb(0.60, 0.14, 0.07)),
         bullet_mesh: meshes.add(Sphere::new(0.17)),
-        bullet_material: materials.add(Color::srgb(1.0, 0.58, 0.12)),
+        player_bullet_mesh: meshes.add(player_bullet_mesh()),
+        bullet_material: materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            alpha_mode: AlphaMode::Blend,
+            unlit: true,
+            double_sided: true,
+            ..default()
+        }),
         enemy_bullet_material: materials.add(Color::srgb(0.88, 0.19, 0.07)),
         barricade_mesh: meshes.add(Cuboid::new(5.4, 1.1, 1.0)),
         barricade_material: materials.add(Color::srgb(0.20, 0.17, 0.13)),
@@ -508,7 +548,7 @@ pub fn place_checkpoint_line(
         CheckpointLine,
         Mesh3d(visuals.checkpoint_mesh.clone()),
         MeshMaterial3d(visuals.checkpoint_material.clone()),
-        Transform::from_xyz(0.0, 0.07, z),
+        Transform::from_xyz(crate::street::centerline_x(z), 0.07, z),
     ));
 }
 

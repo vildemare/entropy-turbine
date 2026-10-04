@@ -1,15 +1,13 @@
 use bevy::prelude::*;
 
 use crate::{
+    attributes::GUNSLINGER_PLAYER,
     enemy::{Cover, Enemy, EnemyReward},
     game::{Phase, Session, Visuals},
     player::Player,
     sound::{self, SoundBank},
     street::{self, Boulder},
 };
-
-const PLAYER_BULLET_SPEED: f32 = 34.0;
-const ENEMY_BULLET_SPEED: f32 = 16.0;
 
 #[derive(Component)]
 pub struct Health(pub u32);
@@ -29,6 +27,8 @@ pub enum Faction {
 #[derive(Component)]
 pub struct Projectile {
     pub direction: Vec3,
+    pub speed: f32,
+    pub radius: f32,
     pub previous: Vec3,
     pub spent: bool,
     pub faction: Faction,
@@ -96,11 +96,7 @@ pub fn move_projectiles(
     }
     for (mut transform, mut bullet) in &mut bullets {
         bullet.previous = transform.translation;
-        let speed = match bullet.faction {
-            Faction::Player => PLAYER_BULLET_SPEED,
-            Faction::Enemy => ENEMY_BULLET_SPEED,
-        };
-        transform.translation += bullet.direction * speed * time.delta_secs();
+        transform.translation += bullet.direction * bullet.speed * time.delta_secs();
     }
 }
 
@@ -167,9 +163,12 @@ pub fn resolve_hits(
             if health.0 == 0 || (bullet.faction == Faction::Enemy && entity == bullet.owner) {
                 continue;
             }
-            if let Some(t) =
-                segment_circle_t(start, end, enemy_transform.translation, enemy.radius + 0.17)
-            {
+            if let Some(t) = segment_circle_t(
+                start,
+                end,
+                enemy_transform.translation,
+                enemy.radius + bullet.radius,
+            ) {
                 if t < nearest {
                     nearest = t;
                     hit = Some(if bullet.faction == Faction::Player {
@@ -185,7 +184,12 @@ pub fn resolve_hits(
                 if health.0 == 0 {
                     continue;
                 }
-                if let Some(t) = segment_circle_t(start, end, player_transform.translation, 0.72) {
+                if let Some(t) = segment_circle_t(
+                    start,
+                    end,
+                    player_transform.translation,
+                    GUNSLINGER_PLAYER.hit_radius,
+                ) {
                     if t < nearest {
                         nearest = t;
                         hit = Some(Hit::Player(entity));
@@ -346,7 +350,8 @@ pub fn expire_projectiles(
         lifetime.0 -= time.delta_secs();
         if lifetime.0 <= 0.0
             || bullet.spent
-            || transform.translation.x.abs() >= street::ROAD_HALF_WIDTH + 5.0
+            || (transform.translation.x - street::centerline_x(transform.translation.z)).abs()
+                >= street::ROAD_HALF_WIDTH + 5.0
         {
             commands.entity(entity).despawn();
         }
@@ -377,6 +382,8 @@ mod tests {
         app.world_mut().spawn((
             Projectile {
                 direction: Vec3::Z,
+                speed: 16.0,
+                radius: 0.17,
                 previous: Vec3::new(0.0, 0.75, -1.0),
                 spent: false,
                 faction: Faction::Enemy,
@@ -459,6 +466,8 @@ mod tests {
             .spawn((
                 Projectile {
                     direction: Vec3::Z,
+                    speed: 16.0,
+                    radius: 0.17,
                     previous: Vec3::new(0.0, 0.75, -4.0),
                     spent: false,
                     faction: Faction::Enemy,
@@ -498,6 +507,8 @@ mod tests {
             .spawn((
                 Projectile {
                     direction: Vec3::NEG_Z,
+                    speed: 34.0,
+                    radius: 0.17,
                     previous: Vec3::new(0.0, 0.75, 0.0),
                     spent: false,
                     faction: Faction::Player,
@@ -530,6 +541,8 @@ mod tests {
             .spawn((
                 Projectile {
                     direction: Vec3::X,
+                    speed: 34.0,
+                    radius: 0.17,
                     previous: Vec3::new(12.0, 0.75, 0.0),
                     spent: false,
                     faction: Faction::Player,

@@ -1,9 +1,11 @@
 mod ammo_hud;
+mod attributes;
 mod camera;
 mod character;
 mod combat;
 mod enemy;
 mod game;
+mod input;
 mod player;
 mod sound;
 mod street;
@@ -30,7 +32,8 @@ fn main() {
             (
                 character::load_animations,
                 character::bind_animations,
-                player::read_input,
+                player::clear_inactive_intents,
+                input::read_keyboard_mouse,
                 player::move_players,
                 camera::follow_player,
                 player::face_players,

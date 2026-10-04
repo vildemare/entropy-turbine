@@ -1,6 +1,9 @@
 use bevy::prelude::*;
 
-use crate::player::{LocalPlayer, Player};
+use crate::{
+    player::{LocalPlayer, Player},
+    street,
+};
 
 pub const CAMERA_HEIGHT: f32 = 24.0;
 pub const CAMERA_BACK_OFFSET: f32 = 21.0;
@@ -45,5 +48,8 @@ pub fn follow_player(
             camera.translation.z +=
                 (target_z - camera.translation.z) * (1.0 - (-6.0 * time.delta_secs()).exp());
         }
+        let target_x = street::centerline_x(camera.translation.z - CAMERA_BACK_OFFSET);
+        camera.translation.x +=
+            (target_x - camera.translation.x) * (1.0 - (-8.0 * time.delta_secs()).exp());
     }
 }

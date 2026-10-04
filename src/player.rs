@@ -3,6 +3,7 @@ use std::time::Duration;
 use bevy::{prelude::*, window::PrimaryWindow};
 
 use crate::{
+    attributes::{GUNSLINGER_PLAYER, GUNSLINGER_WEAPON},
     camera,
     character::{CharacterAsset, CharacterModel},
     combat::{Damage, Faction, Health, HitCooldown, Lifetime, Projectile},
@@ -12,23 +13,11 @@ use crate::{
     street,
 };
 
-const MOVE_SPEED: f32 = 8.0;
-const FIRE_INTERVAL: Duration = Duration::from_millis(140);
-pub const START_HEALTH: u32 = 1000;
-pub const HEALTH_UPGRADE: u32 = 200;
-pub const MAX_HEALTH: u32 = 3000;
-pub const BASE_CAPACITY: u8 = 6;
-pub const MAX_CAPACITY: u8 = 12;
-pub const BASE_RELOAD_WAIT_MS: u32 = 1050;
-pub const RELOAD_UPGRADE_MS: u32 = 75;
-pub const MIN_RELOAD_WAIT_MS: u32 = 600;
-pub const QUICKLOAD_CHAMBER_MS: u64 = 60;
-pub const SHOOT_SPEED_FACTOR: f32 = 2.0 / 3.0;
-
 pub fn reload_wait_ms_for(purchases: u32) -> u32 {
-    BASE_RELOAD_WAIT_MS
-        .saturating_sub(purchases.saturating_mul(RELOAD_UPGRADE_MS))
-        .max(MIN_RELOAD_WAIT_MS)
+    GUNSLINGER_WEAPON
+        .starting_reload_wait_ms
+        .saturating_sub(purchases.saturating_mul(GUNSLINGER_WEAPON.reload_upgrade_ms))
+        .max(GUNSLINGER_WEAPON.min_reload_wait_ms)
 }
 
 #[derive(Component)]
@@ -38,13 +27,23 @@ pub struct Player;
 pub struct LocalPlayer;
 
 #[derive(Component)]
+pub struct KeyboardMouseControlled;
+
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlayerSlot(pub u8);
+
+#[derive(Component)]
 pub struct MovementSpeed(pub f32);
 
-#[derive(Component, Default)]
+#[derive(Component, Clone, Copy, Debug, Default)]
 pub struct PlayerIntent {
     pub movement: Vec2,
     pub aim: Vec3,
     pub firing: bool,
+}
+
+pub fn is_shooting(intent: &PlayerIntent, weapon: &GunslingerWeapon) -> bool {
+    intent.firing && weapon.can_fire()
 }
 
 #[derive(Component)]
@@ -67,15 +66,15 @@ pub struct PlayerStats {
 impl PlayerProgression {
     pub fn stats(self) -> PlayerStats {
         PlayerStats {
-            max_health: START_HEALTH
-                + self
-                    .health_level
-                    .min((MAX_HEALTH - START_HEALTH) / HEALTH_UPGRADE)
-                    * HEALTH_UPGRADE,
-            capacity: BASE_CAPACITY
-                + self
-                    .capacity_level
-                    .min(u32::from(MAX_CAPACITY - BASE_CAPACITY)) as u8,
+            max_health: GUNSLINGER_PLAYER.starting_health
+                + self.health_level.min(
+                    (GUNSLINGER_PLAYER.max_health - GUNSLINGER_PLAYER.starting_health)
+                        / GUNSLINGER_PLAYER.health_per_upgrade,
+                ) * GUNSLINGER_PLAYER.health_per_upgrade,
+            capacity: GUNSLINGER_WEAPON.starting_capacity
+                + self.capacity_level.min(u32::from(
+                    GUNSLINGER_WEAPON.max_capacity - GUNSLINGER_WEAPON.starting_capacity,
+                )) as u8,
             reload_wait_ms: reload_wait_ms_for(self.reload_level),
         }
     }
@@ -239,7 +238,8 @@ impl GunslingerWeapon {
             if self.waiting_for_loader {
                 self.waiting_for_loader = false;
                 self.recharging = true;
-                self.reload_remaining = Duration::from_millis(QUICKLOAD_CHAMBER_MS);
+                self.reload_remaining =
+                    Duration::from_millis(GUNSLINGER_WEAPON.quickload_chamber_ms);
             } else {
                 self.load_round();
                 if self.rounds == self.capacity {
@@ -247,7 +247,8 @@ impl GunslingerWeapon {
                     self.reload_remaining = Duration::from_millis(self.reload_wait_ms as u64);
                     break;
                 }
-                self.reload_remaining = Duration::from_millis(QUICKLOAD_CHAMBER_MS);
+                self.reload_remaining =
+                    Duration::from_millis(GUNSLINGER_WEAPON.quickload_chamber_ms);
             }
         }
         if self.waiting_for_loader || self.recharging {
@@ -295,8 +296,10 @@ pub fn spawn_player(commands: &mut Commands, character: &CharacterAsset, positio
         .spawn((
             Player,
             LocalPlayer,
+            KeyboardMouseControlled,
+            PlayerSlot(0),
             PlayerIntent::default(),
-            MovementSpeed(MOVE_SPEED),
+            MovementSpeed(GUNSLINGER_PLAYER.move_speed),
             FireCooldown(Duration::ZERO),
             build,
             stats,
@@ -317,51 +320,14 @@ pub fn spawn_player(commands: &mut Commands, character: &CharacterAsset, positio
     ));
 }
 
-pub fn read_input(
-    mut session: ResMut<Session>,
-    keys: Res<ButtonInput<KeyCode>>,
-    mouse: Res<ButtonInput<MouseButton>>,
-    windows: Query<&Window, With<PrimaryWindow>>,
-    camera: Query<(&Camera, &GlobalTransform), With<crate::camera::FollowCamera>>,
-    mut players: Query<(&mut PlayerIntent, &GunslingerWeapon), (With<Player>, With<LocalPlayer>)>,
+pub fn clear_inactive_intents(
+    session: Res<Session>,
+    mut players: Query<&mut PlayerIntent, With<Player>>,
 ) {
     if session.phase != Phase::Playing {
-        for (mut intent, _) in &mut players {
+        for mut intent in &mut players {
             intent.movement = Vec2::ZERO;
             intent.firing = false;
-        }
-        return;
-    }
-    if session.suppress_fire_until_release && !mouse.pressed(MouseButton::Left) {
-        session.suppress_fire_until_release = false;
-    }
-    let mut movement = Vec2::new(
-        (keys.pressed(KeyCode::KeyD) as i8 - keys.pressed(KeyCode::KeyA) as i8) as f32,
-        (keys.pressed(KeyCode::KeyS) as i8 - keys.pressed(KeyCode::KeyW) as i8) as f32,
-    );
-    movement = movement.normalize_or_zero();
-    let aim = windows
-        .single()
-        .ok()
-        .and_then(|window| window.cursor_position())
-        .and_then(|cursor| {
-            let (camera, transform) = camera.single().ok()?;
-            let ray = camera.viewport_to_world(transform, cursor).ok()?;
-            let direction = *ray.direction;
-            if direction.y.abs() < 0.0001 {
-                return None;
-            }
-            let distance = -ray.origin.y / direction.y;
-            (distance > 0.0).then_some(ray.origin + direction * distance)
-        });
-
-    for (mut intent, weapon) in &mut players {
-        intent.movement = movement;
-        intent.firing = mouse.pressed(MouseButton::Left)
-            && !session.suppress_fire_until_release
-            && weapon.can_fire();
-        if let Some(aim) = aim {
-            intent.aim = aim;
         }
     }
 }
@@ -372,7 +338,15 @@ pub fn move_players(
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &Transform), (With<camera::FollowCamera>, Without<Player>)>,
     covers: Query<(&Transform, &Cover), (With<Cover>, Without<Player>)>,
-    mut players: Query<(&mut Transform, &PlayerIntent, &MovementSpeed), With<Player>>,
+    mut players: Query<
+        (
+            &mut Transform,
+            &PlayerIntent,
+            &MovementSpeed,
+            &GunslingerWeapon,
+        ),
+        With<Player>,
+    >,
 ) {
     if session.phase != Phase::Playing {
         return;
@@ -383,9 +357,9 @@ pub fn move_players(
             .ok()
             .and_then(|window| camera::rear_limit(camera, transform, window))
     });
-    for (mut transform, intent, speed) in &mut players {
-        let speed_factor = if intent.firing {
-            SHOOT_SPEED_FACTOR
+    for (mut transform, intent, speed, weapon) in &mut players {
+        let speed_factor = if is_shooting(intent, weapon) {
+            GUNSLINGER_PLAYER.shoot_move_factor
         } else {
             1.0
         };
@@ -393,16 +367,24 @@ pub fn move_players(
             * speed.0
             * speed_factor
             * time.delta_secs();
-        transform.translation.x = street::clamp_actor_x(transform.translation.x, 0.9);
+        transform.translation.x = street::clamp_actor_x(
+            transform.translation.x,
+            transform.translation.z,
+            GUNSLINGER_PLAYER.edge_radius,
+        );
         for (cover_transform, cover) in &covers {
             enemy::separate_from_cover(
                 &mut transform.translation,
-                0.65,
+                GUNSLINGER_PLAYER.cover_radius,
                 cover_transform.translation,
                 cover,
             );
         }
-        transform.translation.x = street::clamp_actor_x(transform.translation.x, 0.9);
+        transform.translation.x = street::clamp_actor_x(
+            transform.translation.x,
+            transform.translation.z,
+            GUNSLINGER_PLAYER.edge_radius,
+        );
         if let Some(limit) = rear_limit {
             transform.translation.z = transform.translation.z.min(limit);
         }
@@ -467,26 +449,45 @@ pub fn shoot(
             weapon.advance_reload(time.delta());
             continue;
         };
-        cooldown.0 = FIRE_INTERVAL;
+        cooldown.0 = Duration::from_millis(GUNSLINGER_WEAPON.fire_interval_ms);
         let side = if gun == 0 { -1.0 } else { 1.0 };
-        let lateral = Vec3::new(direction.z, 0.0, -direction.x) * side * 0.34;
-        let muzzle = transform.translation + direction * 0.95 + lateral;
-        commands.spawn((
-            Projectile {
-                direction,
-                previous: muzzle,
-                spent: false,
-                faction: Faction::Player,
-                owner: entity,
-            },
-            Damage(1),
-            Lifetime(1.4),
-            Mesh3d(visuals.bullet_mesh.clone()),
-            MeshMaterial3d(visuals.bullet_material.clone()),
-            Transform::from_translation(muzzle),
-        ));
+        let lateral =
+            Vec3::new(direction.z, 0.0, -direction.x) * side * GUNSLINGER_WEAPON.muzzle_side;
+        let muzzle = transform.translation + direction * GUNSLINGER_WEAPON.muzzle_forward + lateral;
+        for (shot_direction, shot_muzzle) in paired_shots(direction, muzzle) {
+            commands.spawn((
+                Projectile {
+                    direction: shot_direction,
+                    speed: GUNSLINGER_WEAPON.projectile_speed,
+                    radius: GUNSLINGER_WEAPON.projectile_radius,
+                    previous: shot_muzzle,
+                    spent: false,
+                    faction: Faction::Player,
+                    owner: entity,
+                },
+                Damage(GUNSLINGER_WEAPON.projectile_damage),
+                Lifetime(GUNSLINGER_WEAPON.projectile_lifetime),
+                Mesh3d(visuals.player_bullet_mesh.clone()),
+                MeshMaterial3d(visuals.bullet_material.clone()),
+                Transform::from_translation(shot_muzzle)
+                    .with_rotation(Quat::from_rotation_y(
+                        shot_direction.x.atan2(shot_direction.z),
+                    ))
+                    .with_scale(Vec3::splat(GUNSLINGER_WEAPON.projectile_visual_scale)),
+            ));
+        }
         sound::play_game(&mut commands, sounds.player_shot(), 0.34, 1.0);
     }
+}
+
+fn paired_shots(direction: Vec3, muzzle: Vec3) -> [(Vec3, Vec3); 2] {
+    let lateral = Vec3::new(direction.z, 0.0, -direction.x);
+    [-1.0, 1.0].map(|side| {
+        (
+            (direction + lateral * side * GUNSLINGER_WEAPON.pair_spread).normalize(),
+            muzzle + lateral * side * GUNSLINGER_WEAPON.pair_muzzle_offset,
+        )
+    })
 }
 
 #[cfg(test)]
@@ -516,9 +517,9 @@ mod tests {
             }
             .stats(),
             PlayerStats {
-                max_health: MAX_HEALTH,
-                capacity: MAX_CAPACITY,
-                reload_wait_ms: MIN_RELOAD_WAIT_MS
+                max_health: GUNSLINGER_PLAYER.max_health,
+                capacity: GUNSLINGER_WEAPON.max_capacity,
+                reload_wait_ms: GUNSLINGER_WEAPON.min_reload_wait_ms
             }
         );
         let mut stats = PlayerProgression::default().stats();
@@ -613,7 +614,9 @@ mod tests {
         weapon.advance_reload(Duration::from_millis(1));
         assert!(weapon.recharging);
         assert!(!weapon.can_fire());
-        weapon.advance_reload(Duration::from_millis(5 * QUICKLOAD_CHAMBER_MS));
+        weapon.advance_reload(Duration::from_millis(
+            5 * GUNSLINGER_WEAPON.quickload_chamber_ms,
+        ));
         assert_eq!(weapon.rounds, weapon.capacity);
         assert!(weapon.can_fire());
     }
@@ -669,9 +672,25 @@ mod tests {
             .filter(|(shot, _)| shot.faction == Faction::Player)
             .map(|(_, transform)| transform.translation.x)
             .collect();
-        assert_eq!(shots.len(), 6);
+        assert_eq!(shots.len(), 12);
+        assert!(
+            app.world_mut()
+                .query::<(&Projectile, &Transform)>()
+                .iter(app.world())
+                .all(|(shot, transform)| {
+                    (shot.speed - 34.0 * 4.0 / 3.0).abs() < 0.001
+                        && (shot.radius - 0.17 * 2.0 / 3.0).abs() < 0.001
+                        && transform.scale == Vec3::splat(2.0 / 3.0)
+                })
+        );
+        assert!(
+            app.world_mut()
+                .query::<(&Projectile, &Damage)>()
+                .iter(app.world())
+                .all(|(_, damage)| damage.0 == 2)
+        );
         shots.sort_by(f32::total_cmp);
-        assert!(shots[0] < -0.3 && shots[5] > 0.3);
+        assert!(shots[0] < -0.3 && shots[11] > 0.3);
 
         app.world_mut()
             .resource_mut::<Time>()
@@ -700,7 +719,7 @@ mod tests {
                 .query::<&Projectile>()
                 .iter(app.world())
                 .count(),
-            6
+            12
         );
         app.world_mut()
             .get_mut::<PlayerIntent>(player)
@@ -713,5 +732,51 @@ mod tests {
         let weapon = app.world().get::<GunslingerWeapon>(player).unwrap();
         assert_eq!(weapon.rounds, weapon.capacity);
         assert!(weapon.can_fire());
+    }
+
+    #[test]
+    fn separate_player_intents_fire_independently() {
+        let mut app = App::new();
+        app.insert_resource(Time::<()>::default())
+            .insert_resource(Session::default())
+            .insert_resource(Visuals::default())
+            .insert_resource(SoundBank::default())
+            .add_systems(Update, shoot);
+        let spawn = |world: &mut World, x: f32| {
+            world
+                .spawn((
+                    Player,
+                    PlayerIntent {
+                        aim: Vec3::new(x, 0.0, -10.0),
+                        firing: true,
+                        ..default()
+                    },
+                    FireCooldown(Duration::ZERO),
+                    GunslingerWeapon::default(),
+                    Transform::from_xyz(x, PLAYER_Y, 0.0),
+                ))
+                .id()
+        };
+        let first = spawn(app.world_mut(), -2.0);
+        let second = spawn(app.world_mut(), 2.0);
+        app.update();
+        let owners: Vec<_> = app
+            .world_mut()
+            .query::<&Projectile>()
+            .iter(app.world())
+            .map(|projectile| projectile.owner)
+            .collect();
+        assert_eq!(owners.len(), 4);
+        assert!(owners.contains(&first));
+        assert!(owners.contains(&second));
+    }
+
+    #[test]
+    fn paired_shots_stay_within_one_metre_of_each_other_at_fifty_metres() {
+        let shots = paired_shots(Vec3::NEG_Z, Vec3::ZERO);
+        let first = shots[0].1 + shots[0].0 * 50.0;
+        let second = shots[1].1 + shots[1].0 * 50.0;
+        assert!(first.distance(second) < 1.0);
+        assert!((first.x + second.x).abs() < 0.001);
     }
 }
