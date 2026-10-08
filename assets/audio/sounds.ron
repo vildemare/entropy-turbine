@@ -1,0 +1,92 @@
+// Sound ledger for Entropy Turbine.
+// synthesized: entropy-synth renders the WAV again when definition changes.
+// recorded: a WAV added by hand. The tool leaves the file alone.
+(
+    sample_rate: 44100,
+    sounds: [
+        (
+            id: "player_shot",
+            file: "player_shot.wav",
+            origin: synthesized,
+            definition: "e23345f8fc03ee02c71d42b02867fcd0e167ddf14ef9712ad3d34ed8f6d66de4",
+            duration_secs: 0.25,
+        ),
+        (
+            id: "player_shot_2",
+            file: "player_shot_2.wav",
+            origin: synthesized,
+            definition: "a5dd4cce888c66e0f0df22833a1815873c5dda8c07ad3b976366bc86f72737f8",
+            duration_secs: 0.25,
+        ),
+        (
+            id: "player_shot_3",
+            file: "player_shot_3.wav",
+            origin: synthesized,
+            definition: "abb98749c6e7d2919678417c76c7271fe8733d35476a77f8160071f459e47e47",
+            duration_secs: 0.25,
+        ),
+        (
+            id: "enemy_shot",
+            file: "enemy_shot.wav",
+            origin: synthesized,
+            definition: "fd87e2507c11910ca1828dd8580078a69e25d3c05b9ec6fcee8018187e2efa2c",
+            duration_secs: 0.18,
+        ),
+        (
+            id: "enemy_shot_2",
+            file: "enemy_shot_2.wav",
+            origin: synthesized,
+            definition: "bb53bdfed92c52eb60a344e1597072eef507afc7fba736c4eda9f52b739ece2a",
+            duration_secs: 0.18,
+        ),
+        (
+            id: "enemy_shot_3",
+            file: "enemy_shot_3.wav",
+            origin: synthesized,
+            definition: "4b8b982099a072093bcc3a0dccc13617bbfdefd9e32fe587302edcfea3bec0b1",
+            duration_secs: 0.18,
+        ),
+        (
+            id: "impact",
+            file: "impact.wav",
+            origin: synthesized,
+            definition: "e21d7ea9c40b883906326861a54f3b51be8a8c27b88b608679c5123749ba5141",
+            duration_secs: 0.2,
+        ),
+        (
+            id: "enemy_hit",
+            file: "enemy_hit.wav",
+            origin: synthesized,
+            definition: "bfde7319063fb76aba73efa6c87adea013f3210e863c67175d13971026366403",
+            duration_secs: 0.24,
+        ),
+        (
+            id: "player_hurt",
+            file: "player_hurt.wav",
+            origin: synthesized,
+            definition: "2c328d4d5977361d7f06884e337785e3f6c35d4b89ce4d30e5c6f3a139572eac",
+            duration_secs: 0.42,
+        ),
+        (
+            id: "death",
+            file: "death.wav",
+            origin: synthesized,
+            definition: "7754d98e172fe8b70c9ed15821f0061fc3eba2ffe940c78f9ef919d2f3827f41",
+            duration_secs: 0.8,
+        ),
+        (
+            id: "menu_click",
+            file: "menu_click.wav",
+            origin: synthesized,
+            definition: "89970daa660693950d8412235cb4381de4ade86df6ee837e176a9ee2295f2272",
+            duration_secs: 0.07,
+        ),
+        (
+            id: "ambience",
+            file: "ambience.wav",
+            origin: synthesized,
+            definition: "7bd061e7c43593ae91bd7a1ad6eb128ef0600474ed68fa7c0cef0629dafc9160",
+            duration_secs: 8.0,
+        ),
+    ],
+)

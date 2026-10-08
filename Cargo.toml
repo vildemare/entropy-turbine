@@ -2,9 +2,23 @@
 name = "entropy-turbine"
 version = "0.1.0"
 edition = "2024"
+default-run = "entropy-turbine"
+
+[workspace]
+members = [".", "entropy-synth"]
+default-members = ["."]
+
+[features]
+package = ["dep:zip"]
 
 [dependencies]
-bevy = { version = "0.19", default-features = false, features = ["3d", "ui", "audio", "wav"] }
+bevy = { version = "0.19", default-features = false, features = ["3d", "ui", "audio", "wav", "file_watcher"] }
+zip = { version = "2", optional = true, default-features = false, features = ["deflate"] }
+
+[[bin]]
+name = "package_windows"
+path = "src/bin/package_windows.rs"
+required-features = ["package"]
 
 [profile.share]
 inherits = "release"

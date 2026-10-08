@@ -1,14 +1,14 @@
 mod session;
 mod tuning;
 
-mod world;
-mod player;
-mod enemy;
 mod combat;
+mod enemy;
+mod player;
+mod world;
 
-mod ui;
 mod audio;
 mod startup;
+mod ui;
 
 use bevy::prelude::*;
 use bevy::{app::AnimationSystems, transform::TransformSystems};

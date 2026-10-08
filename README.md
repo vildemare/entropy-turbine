@@ -34,7 +34,7 @@ On a Windows build machine with Rust and the Visual Studio C++ build tools insta
 
 ```sh
 cargo build --profile share
-python tools/package_windows.py target/share/entropy-turbine.exe
+cargo run --bin package_windows --features package -- target/share/entropy-turbine.exe
 ```
 
 On Linux, install the `x86_64-pc-windows-gnu` Rust target and the MinGW-w64 cross compiler first, then build and package:
@@ -42,7 +42,7 @@ On Linux, install the `x86_64-pc-windows-gnu` Rust target and the MinGW-w64 cros
 ```sh
 rustup target add x86_64-pc-windows-gnu
 CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc cargo build --profile share --target x86_64-pc-windows-gnu
-python3 tools/package_windows.py target/x86_64-pc-windows-gnu/share/entropy-turbine.exe
+cargo run --bin package_windows --features package -- target/x86_64-pc-windows-gnu/share/entropy-turbine.exe
 ```
 
 The resulting `dist/entropy-turbine-windows.zip` is the file to send. The `share` profile removes symbols and optimizes for size; on this Pop!_OS machine it reduced the ZIP from about 47 MB to about 13 MB. Extract it on Windows before launching the game.
@@ -65,4 +65,4 @@ The player model is at `assets/models/toon_soldier.gltf`. It comes from the [Qua
 
 Menu headings use [Cinzel](https://github.com/google/fonts/tree/main/ofl/cinzel), and controls use [Oxanium](https://github.com/google/fonts/tree/main/ofl/oxanium). Both are bundled under the SIL Open Font License; their license texts are in `assets/fonts/`.
 
-The sounds in `assets/audio/` are original synthesized WAV files. Run `python3 tools/generate_sfx.py` to regenerate them without external packages.
+The sounds in `assets/audio/` are original synthesized WAV files, authored in the `entropy-synth` crate in this repo. `cargo run -p entropy-synth -- play player_shot` hears a sound without exporting, and `cargo run -p entropy-synth -- export` writes any WAV whose definition changed.

@@ -85,5 +85,8 @@ mod tests {
         assert_eq!(EnemyKind::Scout.profile().shot_damage, 150);
         assert_eq!(EnemyKind::Trooper.profile().shot_damage, 200);
         assert_eq!(EnemyKind::Heavy.profile().shot_damage, 300);
+        assert_eq!(EnemyKind::Scout.profile().shot_speed, 13.0);
+        assert_eq!(EnemyKind::Trooper.profile().shot_speed, 13.0);
+        assert_eq!(EnemyKind::Heavy.profile().shot_speed, 13.0);
     }
 }
