@@ -5,7 +5,7 @@ use bevy::{
     prelude::*,
 };
 
-use crate::game::{Phase, Session};
+use crate::session::{Phase, Session};
 
 #[derive(Resource, Default)]
 pub struct SoundBank {

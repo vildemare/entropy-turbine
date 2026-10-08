@@ -1,12 +1,12 @@
+//! The two chamber rings at the lower right of the screen.
+
 use std::f32::consts::{FRAC_PI_2, TAU};
 
 use bevy::prelude::*;
 use bevy::text::{FontSize, FontSource};
 
-use crate::{
-    game::UiFonts,
-    player::{GunslingerWeapon, LocalPlayer},
-};
+use crate::player::{GunslingerWeapon, LocalPlayer};
+use crate::ui::UiFonts;
 
 const DRUM_CENTER: f32 = 70.0;
 const CHAMBER_SIZE: f32 = 19.0;

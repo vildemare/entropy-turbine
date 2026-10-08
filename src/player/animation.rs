@@ -1,10 +1,12 @@
+//! Loads the player model and drives its movement and aim poses.
+
 use std::time::Duration;
 
 use bevy::prelude::*;
 
-use crate::attributes::GUNSLINGER_PLAYER;
-use crate::game::{Phase, Session};
 use crate::player::{self, GunslingerWeapon, Player, PlayerIntent};
+use crate::session::{Phase, Session};
+use crate::tuning::GUNSLINGER_PLAYER;
 
 const MODEL_PATH: &str = "models/toon_soldier.gltf";
 

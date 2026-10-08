@@ -150,7 +150,7 @@ pub fn setup(
     }
 }
 
-pub fn follow_street(
+pub fn follow_route(
     players: Query<&Transform, (With<Player>, With<LocalPlayer>, Without<TerrainVisual>)>,
     mut visuals: Query<(&mut Transform, Option<&Boulder>), With<TerrainVisual>>,
     mut road: ResMut<RoadMesh>,

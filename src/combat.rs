@@ -1,13 +1,14 @@
+//! Projectiles, hits, and the point orbs left by defeated enemies.
+
 use bevy::prelude::*;
 
-use crate::{
-    attributes::GUNSLINGER_PLAYER,
-    enemy::{Cover, Enemy, EnemyReward},
-    game::{Phase, Session, Visuals},
-    player::Player,
-    sound::{self, SoundBank},
-    street::{self, Boulder},
-};
+use crate::audio::{self, SoundBank};
+use crate::enemy::{Cover, Enemy, EnemyReward};
+use crate::player::Player;
+use crate::session::{Phase, Session};
+use crate::tuning::GUNSLINGER_PLAYER;
+use crate::world::route::{self, Boulder};
+use crate::world::visuals::Visuals;
 
 #[derive(Component)]
 pub struct Health(pub u32);
@@ -47,7 +48,7 @@ pub fn collect_orbs(
     mut commands: Commands,
     players: Query<&Transform, With<Player>>,
     mut orbs: Query<(Entity, &mut Transform, &PointOrb), Without<Player>>,
-    camera: Query<&Transform, (With<crate::camera::FollowCamera>, Without<PointOrb>)>,
+    camera: Query<&Transform, (With<crate::world::camera::FollowCamera>, Without<PointOrb>)>,
 ) {
     if session.phase != Phase::Playing {
         return;
@@ -203,9 +204,9 @@ pub fn resolve_hits(
             Hit::Enemy(entity) => {
                 if let Ok((_, enemy_transform, _, mut health, reward)) = enemies.get_mut(entity) {
                     health.0 = health.0.saturating_sub(damage.0);
-                    sound::play_game(&mut commands, &sounds.enemy_hit, 0.20, 1.0);
+                    audio::play_game(&mut commands, &sounds.enemy_hit, 0.20, 1.0);
                     if health.0 == 0 {
-                        sound::play_game(&mut commands, &sounds.death, 0.18, 1.3);
+                        audio::play_game(&mut commands, &sounds.death, 0.18, 1.3);
                         if let Some(reward) = reward {
                             let points = reward.points();
                             commands.spawn((
@@ -231,20 +232,20 @@ pub fn resolve_hits(
                         if let Ok((_, _, _, _, Some(mut reward))) = enemies.get_mut(bullet.owner) {
                             reward.hit_player = true;
                         }
-                        sound::play_game(&mut commands, &sounds.player_hurt, 0.35, 1.0);
+                        audio::play_game(&mut commands, &sounds.player_hurt, 0.35, 1.0);
                         cooldown.0 = 0.35;
                         if health.0 == 0 {
-                            sound::play_game(&mut commands, &sounds.death, 0.47, 0.85);
+                            audio::play_game(&mut commands, &sounds.death, 0.47, 0.85);
                             session.phase = Phase::PlayerDead;
                         }
                     }
                 }
             }
             Hit::Cover | Hit::Boulder => {
-                sound::play_game(&mut commands, &sounds.impact, 0.13, 1.0);
+                audio::play_game(&mut commands, &sounds.impact, 0.13, 1.0);
             }
             Hit::Friendly => {
-                sound::play_game(&mut commands, &sounds.enemy_hit, 0.09, 1.0);
+                audio::play_game(&mut commands, &sounds.enemy_hit, 0.09, 1.0);
             }
         }
     }
@@ -316,7 +317,7 @@ pub fn segment_boulder_t(start: Vec3, end: Vec3, transform: &Transform) -> Optio
     let inverse = transform.rotation.inverse();
     let local_start = inverse * (start - transform.translation);
     let local_end = inverse * (end - transform.translation);
-    let half = street::BOULDER_SIZE * transform.scale.abs() * 0.5;
+    let half = route::BOULDER_SIZE * transform.scale.abs() * 0.5;
     let mut enter = 0.0_f32;
     let mut exit = 1.0_f32;
     for (origin, delta, extent) in [
@@ -350,8 +351,8 @@ pub fn expire_projectiles(
         lifetime.0 -= time.delta_secs();
         if lifetime.0 <= 0.0
             || bullet.spent
-            || (transform.translation.x - street::centerline_x(transform.translation.z)).abs()
-                >= street::ROAD_HALF_WIDTH + 5.0
+            || (transform.translation.x - route::centerline_x(transform.translation.z)).abs()
+                >= route::ROAD_HALF_WIDTH + 5.0
         {
             commands.entity(entity).despawn();
         }

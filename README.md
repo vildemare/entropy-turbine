@@ -2,6 +2,8 @@
 
 A forward-scrolling 3D shooter prototype built with Rust and Bevy 0.19. The player uses an included animated glTF character; the rocky terrain and steampunk enemy gunners are assembled from simple 3D meshes.
 
+Design notes are in [docs/game_design.md](docs/game_design.md).
+
 ## Run
 
 Install a current stable Rust toolchain, then run:
@@ -47,17 +49,17 @@ The resulting `dist/entropy-turbine-windows.zip` is the file to send. The `share
 
 ## Code
 
-- `src/input.rs` translates keyboard and mouse state into `PlayerIntent` for the keyboard-controlled player.
-- `src/attributes.rs` holds base player, Gunslinger weapon, and enemy variant tuning values.
-- `src/player.rs` holds player intent, stats, movement, and firing. Gameplay reads intent without reading devices.
-- `src/ammo_hud.rs` draws and updates the Gunslinger's two chamber rings.
-- `src/enemy.rs` places cover, spawns formations, runs enemy behavior, spacing, and ranged attacks.
+`src/main.rs` is the frame schedule. The rest of `src/` is grouped by what it owns:
+
+- `src/session.rs` stores the phase and the shared counters.
+- `src/tuning.rs` holds base player, Gunslinger weapon, and enemy variant numbers. Runtime state stays on entities.
+- `src/startup.rs` builds the world and restarts after death.
+- `src/world/` draws the dirt route, follows the player with a forward-only camera, and keeps the shared meshes.
+- `src/player/` holds intent, movement, and firing. `input` writes `PlayerIntent` for the keyboard-controlled player; gameplay reads intent without reading devices. `animation` loads the model and turns the torso toward the mouse while firing. `ammo_hud` draws the two chamber rings.
+- `src/enemy/` places cover and spawns waves from `encounter`, then moves, spaces, and shoots from `behavior`.
 - `src/combat.rs` handles projectiles, health, cover hits, friendly shot interception, and point pickups.
-- `src/camera.rs` advances the camera with the player and computes the rear movement limit.
-- `src/character.rs` loads the player model, switches between movement and shooting animations, and turns the torso toward the mouse while firing.
-- `src/street.rs` draws scrolling dirt and boulder boundaries.
-- `src/game.rs` sets up the world, stores shared mesh handles, and manages the HUD, checkpoints, and restart.
-- `src/sound.rs` loads and plays the bundled effects and pauses gameplay audio with the menu.
+- `src/ui/` draws the HUD and health blocks, the pause menu, and the checkpoint shop.
+- `src/audio.rs` loads and plays the bundled effects and pauses gameplay audio with the menu.
 
 The player model is at `assets/models/toon_soldier.gltf`. It comes from the [Quaternius Toon Shooter Game Kit](https://quaternius.com/packs/toonshootergamekit.html), released under [CC0](https://creativecommons.org/publicdomain/zero/1.0/). Its palette was changed to charcoal, leather, and brass, and only the revolver mesh is shown. The glTF keeps its original animations. Future custom characters can replace this visual scene without changing player movement or collision. Input is already represented separately from movement, which leaves room for network supplied player intent later.
 

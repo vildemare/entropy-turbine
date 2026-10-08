@@ -1,17 +1,25 @@
+//! The Gunslinger: intent, movement, weapon, and spawning.
+
 use std::time::Duration;
 
 use bevy::{prelude::*, window::PrimaryWindow};
 
-use crate::{
-    attributes::{GUNSLINGER_PLAYER, GUNSLINGER_WEAPON},
-    camera,
-    character::{CharacterAsset, CharacterModel},
-    combat::{Damage, Faction, Health, HitCooldown, Lifetime, Projectile},
-    enemy::{self, Cover},
-    game::{PLAYER_Y, Phase, Session, Visuals},
-    sound::{self, SoundBank},
-    street,
-};
+pub mod ammo_hud;
+pub mod animation;
+pub mod input;
+
+use animation::{CharacterAsset, CharacterModel};
+
+use crate::audio::{self, SoundBank};
+use crate::combat::{Damage, Faction, Health, HitCooldown, Lifetime, Projectile};
+use crate::enemy::{self, Cover};
+use crate::session::{Phase, Session};
+use crate::tuning::{GUNSLINGER_PLAYER, GUNSLINGER_WEAPON};
+use crate::world::camera;
+use crate::world::route;
+use crate::world::visuals::Visuals;
+
+pub const PLAYER_Y: f32 = 0.75;
 
 pub fn reload_wait_ms_for(purchases: u32) -> u32 {
     GUNSLINGER_WEAPON
@@ -367,7 +375,7 @@ pub fn move_players(
             * speed.0
             * speed_factor
             * time.delta_secs();
-        transform.translation.x = street::clamp_actor_x(
+        transform.translation.x = route::clamp_actor_x(
             transform.translation.x,
             transform.translation.z,
             GUNSLINGER_PLAYER.edge_radius,
@@ -380,7 +388,7 @@ pub fn move_players(
                 cover,
             );
         }
-        transform.translation.x = street::clamp_actor_x(
+        transform.translation.x = route::clamp_actor_x(
             transform.translation.x,
             transform.translation.z,
             GUNSLINGER_PLAYER.edge_radius,
@@ -476,7 +484,7 @@ pub fn shoot(
                     .with_scale(Vec3::splat(GUNSLINGER_WEAPON.projectile_visual_scale)),
             ));
         }
-        sound::play_game(&mut commands, sounds.player_shot(), 0.34, 1.0);
+        audio::play_game(&mut commands, sounds.player_shot(), 0.34, 1.0);
     }
 }
 

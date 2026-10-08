@@ -1,10 +1,10 @@
+//! Keyboard and mouse adapter. It writes `PlayerIntent` and does nothing else.
+
 use bevy::{prelude::*, window::PrimaryWindow};
 
-use crate::{
-    camera::FollowCamera,
-    game::{Phase, Session},
-    player::{KeyboardMouseControlled, Player, PlayerIntent},
-};
+use crate::player::{KeyboardMouseControlled, Player, PlayerIntent};
+use crate::session::{Phase, Session};
+use crate::world::camera::FollowCamera;
 
 // Device adapters write PlayerIntent before the gameplay systems run. Another
 // adapter can write the same component for its own player without changing

@@ -1,0 +1,7 @@
+# Phases
+
+Part of the [game design](game_design.md). The shape of a wave is in [Enemies](enemy.md). The shop that opens at the end is in [Menus](ui.md).
+
+The rocky approach is divided into phases of ten cover-led waves. Barricades are spaced roughly 31–38 metres apart. The first phase starts with three enemies per wave, adds one after every three waves, and introduces a heavy from wave five onward. Waves four, seven, and ten call a three-enemy reinforcement row after the defenders engage. This yields 42 defenders and up to 9 reinforcements, worth 93 base points if every enemy is defeated and every orb collected, plus at most one hit bonus per enemy. The next phase adds one defender to each wave, brings two heavies in its last two waves, and has one extra reinforcement wave. Later phases cap the main group at seven. These values are a starting balance for playtesting.
+
+A crossing line appears beyond wave ten. Crossing it clears remaining attackers and projectiles, freezes combat, and opens the upgrade shop. Continue preserves points, restores health to the upgraded maximum, refills the current weapon, advances the phase, and resumes spawning ahead. For the Gunslinger that refill is the magazine. The Mage's tanks and the Steamist's canisters follow the same rule when those characters exist. The exact resurrection, lives, and co-op rules remain undecided; do not build a mode framework yet. Avoid code that requires only one possible player or one permanent enemy type.
