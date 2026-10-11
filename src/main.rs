@@ -11,6 +11,7 @@ mod startup;
 mod ui;
 
 use bevy::prelude::*;
+use bevy::window::{CursorGrabMode, CursorOptions};
 use bevy::{app::AnimationSystems, transform::TransformSystems};
 
 fn main() {
@@ -21,12 +22,25 @@ fn main() {
                 resolution: (1280, 720).into(),
                 ..default()
             }),
+            primary_cursor_options: Some(CursorOptions {
+                grab_mode: CursorGrabMode::Locked,
+                visible: false,
+                ..default()
+            }),
             ..default()
         }))
         .init_resource::<session::Session>()
         .init_resource::<enemy::EncounterDirector>()
         .add_systems(Startup, startup::setup)
-        .add_systems(Update, (startup::restart, ui::pause::toggle_pause).chain())
+        .add_systems(
+            Update,
+            (
+                startup::restart,
+                ui::pause::toggle_pause,
+                ui::cursor::move_captured_pointer,
+            )
+                .chain(),
+        )
         .add_systems(
             Update,
             (
@@ -42,11 +56,13 @@ fn main() {
                 enemy::place_covers,
                 ui::checkpoint::place_checkpoint_line,
                 enemy::spawn_groups,
+                enemy::spawn_zap_bots,
                 enemy::move_enemies,
                 enemy::separate_enemies,
+                enemy::drive_zap_bots,
             )
                 .chain()
-                .after(ui::pause::toggle_pause),
+                .after(ui::cursor::move_captured_pointer),
         )
         .add_systems(
             Update,
@@ -81,6 +97,14 @@ fn main() {
         .add_systems(
             Update,
             audio::sync_gameplay_audio.after(ui::pause::sync_pause_menu),
+        )
+        .add_systems(
+            Update,
+            (
+                ui::cursor::sync_pointer_capture,
+                ui::cursor::place_aim_cursor,
+            )
+                .after(ui::pause::sync_pause_menu),
         )
         .add_systems(
             Update,

@@ -324,6 +324,7 @@ pub fn spawn_player(commands: &mut Commands, character: &CharacterAsset, positio
         Transform::from_xyz(0.0, -PLAYER_Y, 0.0)
             .with_rotation(Quat::from_rotation_y(std::f32::consts::PI))
             .with_scale(Vec3::splat(0.8)),
+        Visibility::default(),
         ChildOf(actor),
     ));
 }
@@ -552,7 +553,8 @@ mod tests {
             (0..=6).map(reload_wait_ms_for).collect::<Vec<_>>(),
             vec![1050, 975, 900, 825, 750, 675, 600]
         );
-        assert_eq!(reload_wait_ms_for(100), 600);
+        assert_eq!(reload_wait_ms_for(12), 150);
+        assert_eq!(reload_wait_ms_for(100), 150);
         let mut weapon = GunslingerWeapon::default();
         weapon.apply_stats(
             PlayerProgression {

@@ -10,7 +10,7 @@ The Gunslinger fires from alternating sides. The current test version fires two 
 | Explosive | Less direct damage, small area blast | Blast damage and radius |
 | Piercing | Faster, lower-damage slug with a chance to pass through a target | Velocity, penetration chance, and retained damage |
 
-The first Gunslinger upgrades are maximum health (+200 and heal 200, capped at 3000), magazine capacity (+1, capped at 12), and quickloader wait (-75 milliseconds, down to 600 milliseconds). These are starting values for playtests. Ammunition switching and ammo-specific upgrades remain future work. The current model has one visible revolver, so the alternating muzzle effect and relaxed running pose during reload are gameplay stand-ins for later two-gun and holster art.
+The first Gunslinger upgrades are maximum health (+200 and heal 200, capped at 5000), magazine capacity (+1, capped at 20), and quickloader wait (-75 milliseconds, down to 150 milliseconds). The price ladder still reaches 50 and stays there, so these ceilings take many phases to buy out. A clear second phase does not finish them. These are starting values for playtests. Ammunition switching and ammo-specific upgrades remain future work. The current model has one visible revolver, so the alternating muzzle effect and relaxed running pose during reload are gameplay stand-ins for later two-gun and holster art.
 
 Purchased health, capacity, and quickloader levels form the player build. Derive maximum health, chamber capacity, and reload wait from that build whenever it changes and at phase start. Keep current health, loaded chambers, and the running reload timer as combat state. Continuing from a checkpoint restores health and fills the derived chamber capacity.
 

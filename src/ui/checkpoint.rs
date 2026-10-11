@@ -6,7 +6,7 @@ use bevy::time::Virtual;
 
 use crate::audio::{self, SoundBank};
 use crate::combat::{Health, Projectile};
-use crate::enemy::{EncounterDirector, Enemy};
+use crate::enemy::{Drift, EncounterDirector, Enemy, ZapBot};
 use crate::player::{
     self, GunslingerWeapon, PLAYER_Y, Player, PlayerProgression, PlayerStats, reload_wait_ms_for,
 };
@@ -252,6 +252,7 @@ pub fn cross_checkpoint(
     mut commands: Commands,
     players: Query<&Transform, With<Player>>,
     enemies: Query<Entity, With<Enemy>>,
+    zaps: Query<Entity, With<ZapBot>>,
     bullets: Query<Entity, With<Projectile>>,
 ) {
     if session.phase != Phase::Playing {
@@ -261,7 +262,7 @@ pub fn cross_checkpoint(
         return;
     };
     if players.iter().any(|player| player.translation.z <= z) {
-        for entity in enemies.iter().chain(bullets.iter()) {
+        for entity in enemies.iter().chain(zaps.iter()).chain(bullets.iter()) {
             commands.entity(entity).despawn();
         }
         session.phase = Phase::Checkpoint;
@@ -627,6 +628,7 @@ mod tests {
                 evade_direction: 1.0,
                 sight_blocked: false,
                 reload_duration: 1.0,
+                drift: Drift::default(),
             })
             .id();
         app.update();

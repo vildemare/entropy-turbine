@@ -4,7 +4,7 @@ use bevy::prelude::*;
 
 use crate::audio;
 use crate::combat::{PointOrb, Projectile};
-use crate::enemy::{Cover, EncounterDirector, Enemy};
+use crate::enemy::{Cover, EncounterDirector, Enemy, ZapBot};
 use crate::player::animation::CharacterAsset;
 use crate::player::{self, PLAYER_Y, Player};
 use crate::session::{Phase, Session};
@@ -51,6 +51,7 @@ pub fn setup(
         FollowCamera,
     ));
     ui::spawn_hud(&mut commands, &fonts);
+    ui::cursor::spawn(&mut commands);
     pause::spawn(&mut commands, &fonts);
     ui::checkpoint::spawn(&mut commands, &fonts);
     player::ammo_hud::spawn(&mut commands, &fonts);
@@ -65,6 +66,7 @@ pub fn restart(
     character: Res<CharacterAsset>,
     players: Query<Entity, With<Player>>,
     enemies: Query<Entity, With<Enemy>>,
+    zaps: Query<Entity, With<ZapBot>>,
     bullets: Query<Entity, With<Projectile>>,
     orbs: Query<Entity, With<PointOrb>>,
     covers: Query<Entity, With<Cover>>,
@@ -77,6 +79,7 @@ pub fn restart(
     for entity in players
         .iter()
         .chain(enemies.iter())
+        .chain(zaps.iter())
         .chain(bullets.iter())
         .chain(orbs.iter())
         .chain(covers.iter())

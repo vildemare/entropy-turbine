@@ -19,6 +19,117 @@ pub struct Retreating {
     remaining: f32,
 }
 
+/// Progress watchdog for a walker or a zap-bot.
+///
+/// While `trying` is set, a body that has not advanced for a tenth of a second
+/// backs up along `-attempt`, then its caller resumes the normal step. A walker
+/// that stands to shoot leaves `trying` clear, so the backup pauses and the
+/// shot still happens.
+#[derive(Clone, Copy, Debug)]
+pub struct Drift {
+    pub stalled: f32,
+    pub backing: f32,
+    pub attempt: Vec2,
+    pub from: Vec3,
+    pub step: Vec2,
+    pub trying: bool,
+    pub fresh: bool,
+}
+
+impl Default for Drift {
+    fn default() -> Self {
+        Self {
+            stalled: 0.0,
+            backing: 0.0,
+            attempt: Vec2::ZERO,
+            from: Vec3::ZERO,
+            step: Vec2::ZERO,
+            trying: false,
+            fresh: false,
+        }
+    }
+}
+
+/// Step to apply instead of the normal one while a backup is underway.
+/// `side` peels the reverse off the contact that stopped the body.
+pub fn reverse_step(drift: &Drift, side: f32, max_step: f32) -> Option<Vec3> {
+    if drift.backing <= 0.0 || max_step <= 0.0 {
+        return None;
+    }
+    let back = if drift.attempt.length_squared() > 1.0e-6 {
+        -drift.attempt.normalize()
+    } else {
+        Vec2::new(0.0, -1.0)
+    };
+    let lateral = Vec2::new(-back.y, back.x) * side.signum();
+    let mut dir = back + lateral * 0.65;
+    if dir.length_squared() < 1.0e-6 {
+        dir = Vec2::new(0.0, -1.0);
+    }
+    let dir = dir.normalize();
+    let distance = max_step.min(drift.backing);
+    Some(Vec3::new(dir.x * distance, 0.0, dir.y * distance))
+}
+
+/// Record the XZ change after separation. Returns true when a backup begins,
+/// so the caller can swap the side it will try next.
+pub fn note_drift(drift: &mut Drift, moved: Vec2, dt: f32) -> bool {
+    if !drift.fresh {
+        return false;
+    }
+    drift.fresh = false;
+    if !drift.trying {
+        drift.stalled = 0.0;
+        return false;
+    }
+    if drift.backing > 0.0 {
+        let back = if drift.attempt.length_squared() > 1.0e-6 {
+            -drift.attempt.normalize()
+        } else {
+            Vec2::new(0.0, -1.0)
+        };
+        let gained = moved.dot(back).max(0.0);
+        drift.backing = (drift.backing - gained).max(0.0);
+        if gained < progress_quota(drift.step) {
+            drift.stalled += dt;
+            if drift.stalled >= ENEMY_BEHAVIOR.stall_before_reverse {
+                drift.backing = 0.0;
+                drift.stalled = 0.0;
+            }
+        } else {
+            drift.stalled = 0.0;
+        }
+        return false;
+    }
+    let heading = if drift.step.length_squared() > 1.0e-8 {
+        drift.step.normalize()
+    } else if drift.attempt.length_squared() > 1.0e-8 {
+        drift.attempt
+    } else {
+        Vec2::new(0.0, 1.0)
+    };
+    drift.attempt = heading;
+    if moved.dot(heading) < progress_quota(drift.step) {
+        drift.stalled += dt;
+        if drift.stalled >= ENEMY_BEHAVIOR.stall_before_reverse {
+            drift.stalled = 0.0;
+            drift.backing = ENEMY_BEHAVIOR.reverse_metres;
+            return true;
+        }
+    } else {
+        drift.stalled = 0.0;
+    }
+    false
+}
+
+fn progress_quota(step: Vec2) -> f32 {
+    if step.length() > 1.0e-4 {
+        step.length() * 0.25
+    } else {
+        0.004
+    }
+}
+
 pub fn move_enemies(
     time: Res<Time>,
     session: Res<Session>,
@@ -47,18 +158,25 @@ pub fn move_enemies(
         match enemy.state {
             EnemyState::Entering => {
                 let target = Vec3::new(enemy.slot_x, enemy.height, enemy.cover_z - 1.55);
-                move_toward(
-                    &mut transform.translation,
-                    target,
-                    speed.0 * ENEMY_BEHAVIOR.cover_entry_speed_factor * dt,
+                let max_step = speed.0 * ENEMY_BEHAVIOR.cover_entry_speed_factor * dt;
+                let desired = step_toward(transform.translation, target, max_step);
+                travel(
+                    &mut transform,
+                    &mut enemy,
+                    desired,
+                    max_step,
+                    desired.length_squared() > 1.0e-6,
                 );
                 if transform.translation.distance_squared(target) < 0.18 * 0.18 {
                     enemy.state = EnemyState::Holding;
+                    enemy.drift.backing = 0.0;
+                    enemy.drift.stalled = 0.0;
                     transform.scale.y = 0.58;
                     transform.translation.y = enemy.height * 0.58;
                 }
             }
             EnemyState::Holding => {
+                travel(&mut transform, &mut enemy, Vec3::ZERO, 0.0, false);
                 enemy.hold_timer -= dt;
                 if enemy.hold_timer <= 0.0 {
                     enemy.state = EnemyState::Flanking;
@@ -68,23 +186,35 @@ pub fn move_enemies(
             }
             EnemyState::Flanking => {
                 let target = Vec3::new(enemy.flank_x, enemy.height, enemy.cover_z - 1.55);
-                move_toward(
-                    &mut transform.translation,
-                    target,
-                    speed.0 * ENEMY_BEHAVIOR.cover_exit_speed_factor * dt,
+                let max_step = speed.0 * ENEMY_BEHAVIOR.cover_exit_speed_factor * dt;
+                let desired = step_toward(transform.translation, target, max_step);
+                travel(
+                    &mut transform,
+                    &mut enemy,
+                    desired,
+                    max_step,
+                    desired.length_squared() > 1.0e-6,
                 );
                 if transform.translation.distance_squared(target) < 0.18 * 0.18 {
                     enemy.state = EnemyState::Exiting;
                 }
             }
             EnemyState::Exiting => {
-                transform.translation.z += speed.0 * ENEMY_BEHAVIOR.cover_exit_speed_factor * dt;
+                let max_step = speed.0 * ENEMY_BEHAVIOR.cover_exit_speed_factor * dt;
+                travel(
+                    &mut transform,
+                    &mut enemy,
+                    Vec3::new(0.0, 0.0, max_step),
+                    max_step,
+                    true,
+                );
                 if transform.translation.z > enemy.cover_z + 1.7 {
                     enemy.state = EnemyState::Advancing;
                 }
             }
             EnemyState::Advancing => {
                 let Some(player) = target_player else {
+                    travel(&mut transform, &mut enemy, Vec3::ZERO, 0.0, false);
                     continue;
                 };
                 let to_player = player.translation - transform.translation;
@@ -96,7 +226,14 @@ pub fn move_enemies(
                 if enemy.attack_phase == AttackPhase::Reloading || enemy.sight_blocked {
                     let forward = if distance > 8.0 { 0.5 } else { -0.1 };
                     let direction = Vec3::new(enemy.evade_direction, 0.0, forward).normalize();
-                    transform.translation += direction * speed.0 * dt;
+                    let max_step = speed.0 * dt;
+                    travel(
+                        &mut transform,
+                        &mut enemy,
+                        direction * max_step,
+                        max_step,
+                        true,
+                    );
                     if (transform.translation.x - route::centerline_x(transform.translation.z))
                         .abs()
                         > route::ROAD_HALF_WIDTH - enemy.radius - 0.5
@@ -112,7 +249,18 @@ pub fn move_enemies(
                         Tactic::Direct => horizontal.normalize_or_zero(),
                         Tactic::Straight => Vec3::Z,
                     };
-                    transform.translation += direction * speed.0 * dt;
+                    let max_step = speed.0 * dt;
+                    travel(
+                        &mut transform,
+                        &mut enemy,
+                        direction * max_step,
+                        max_step,
+                        true,
+                    );
+                } else {
+                    // In range with a shot ready: stand. A backup already
+                    // underway waits, and shooting still runs on its own.
+                    travel(&mut transform, &mut enemy, Vec3::ZERO, 0.0, false);
                 }
             }
             EnemyState::Retreating => {
@@ -120,7 +268,14 @@ pub fn move_enemies(
                     retreat.remaining -= dt;
                     transform.scale.y = 1.0;
                     transform.translation.y = enemy.height;
-                    transform.translation.x += retreat.side * ENEMY_BEHAVIOR.retreat_speed * dt;
+                    let max_step = ENEMY_BEHAVIOR.retreat_speed * dt;
+                    travel(
+                        &mut transform,
+                        &mut enemy,
+                        Vec3::new(retreat.side * max_step, 0.0, 0.0),
+                        max_step,
+                        true,
+                    );
                     transform.translation.z = transform.translation.z.min(retreat.rear_z);
                     transform.rotation =
                         Quat::from_rotation_y(retreat.side * std::f32::consts::FRAC_PI_2);
@@ -135,13 +290,32 @@ pub fn move_enemies(
     }
 }
 
-fn move_toward(position: &mut Vec3, target: Vec3, max_step: f32) {
-    let delta = target - *position;
-    *position += delta.clamp_length_max(max_step);
+fn travel(
+    transform: &mut Transform,
+    enemy: &mut Enemy,
+    desired: Vec3,
+    max_step: f32,
+    trying: bool,
+) {
+    enemy.drift.from = transform.translation;
+    enemy.drift.fresh = true;
+    enemy.drift.trying = trying;
+    if !trying {
+        enemy.drift.step = Vec2::ZERO;
+        return;
+    }
+    let step = reverse_step(&enemy.drift, enemy.evade_direction, max_step).unwrap_or(desired);
+    enemy.drift.step = Vec2::new(step.x, step.z);
+    transform.translation += step;
+}
+
+fn step_toward(position: Vec3, target: Vec3, max_step: f32) -> Vec3 {
+    (target - position).clamp_length_max(max_step)
 }
 
 pub fn separate_enemies(
-    mut enemies: Query<(&mut Transform, &Enemy), With<Enemy>>,
+    time: Res<Time>,
+    mut enemies: Query<(&mut Transform, &mut Enemy), With<Enemy>>,
     covers: Query<(&Transform, &Cover), (With<Cover>, Without<Enemy>)>,
 ) {
     for _ in 0..2 {
@@ -170,7 +344,7 @@ pub fn separate_enemies(
             b.translation.z -= shift.y;
         }
     }
-    for (mut transform, enemy) in &mut enemies {
+    for (mut transform, mut enemy) in &mut enemies {
         for (cover_transform, cover) in &covers {
             separate_from_cover(
                 &mut transform.translation,
@@ -184,6 +358,13 @@ pub fn separate_enemies(
             transform.translation.z,
             enemy.radius,
         );
+        let moved = Vec2::new(
+            transform.translation.x - enemy.drift.from.x,
+            transform.translation.z - enemy.drift.from.z,
+        );
+        if note_drift(&mut enemy.drift, moved, time.delta_secs()) {
+            enemy.evade_direction = -enemy.evade_direction;
+        }
     }
 }
 
@@ -553,6 +734,7 @@ mod tests {
             evade_direction: 1.0,
             sight_blocked: false,
             reload_duration: 1.5,
+            drift: Drift::default(),
         }
     }
     #[test]
@@ -635,6 +817,7 @@ mod tests {
                     evade_direction: -1.0,
                     sight_blocked: false,
                     reload_duration: 1.5,
+                    drift: Drift::default(),
                 },
                 MovementSpeed(3.0),
                 Transform::from_xyz(0.0, 0.68, -10.0),
@@ -674,6 +857,144 @@ mod tests {
                 .iter(app.world())
                 .count(),
             3
+        );
+    }
+
+    #[test]
+    fn no_progress_for_a_tenth_of_a_second_starts_a_backup() {
+        let mut drift = Drift {
+            fresh: true,
+            trying: true,
+            step: Vec2::new(0.0, 0.3),
+            ..Drift::default()
+        };
+        assert!(!note_drift(&mut drift, Vec2::ZERO, 0.05));
+        assert!(drift.backing == 0.0);
+        drift.fresh = true;
+        assert!(note_drift(&mut drift, Vec2::ZERO, 0.05));
+        assert_eq!(drift.backing, ENEMY_BEHAVIOR.reverse_metres);
+        assert_eq!(drift.attempt, Vec2::new(0.0, 1.0));
+        let back = reverse_step(&drift, 1.0, 0.4).unwrap();
+        assert!(
+            back.z < -0.2,
+            "backup should run back up the road, got {back}"
+        );
+    }
+
+    #[test]
+    fn a_real_step_clears_the_stall() {
+        let mut drift = Drift {
+            fresh: true,
+            trying: true,
+            stalled: 0.08,
+            step: Vec2::new(0.0, 0.3),
+            ..Drift::default()
+        };
+        assert!(!note_drift(&mut drift, Vec2::new(0.0, 0.3), 0.05));
+        assert_eq!(drift.stalled, 0.0);
+        assert_eq!(drift.backing, 0.0);
+    }
+
+    #[test]
+    fn standing_to_shoot_pauses_a_backup() {
+        let mut drift = Drift {
+            fresh: true,
+            trying: false,
+            backing: ENEMY_BEHAVIOR.reverse_metres,
+            stalled: 0.05,
+            ..Drift::default()
+        };
+        assert!(!note_drift(&mut drift, Vec2::ZERO, 0.2));
+        assert_eq!(drift.backing, ENEMY_BEHAVIOR.reverse_metres);
+        assert_eq!(drift.stalled, 0.0);
+    }
+
+    #[test]
+    fn a_walker_pinned_on_cover_backs_up_then_a_shot_still_stops_it() {
+        let mut app = App::new();
+        app.insert_resource(Time::<()>::default())
+            .insert_resource(Session::default())
+            .insert_resource(Visuals::default())
+            .insert_resource(SoundBank::default())
+            .add_systems(
+                Update,
+                (move_enemies, separate_enemies, shoot_enemies).chain(),
+            );
+        app.world_mut().spawn((
+            Cover {
+                half_width: 2.7,
+                half_depth: 0.5,
+                height: 1.1,
+            },
+            Transform::from_xyz(0.0, 0.55, 0.0),
+        ));
+        let walker = app
+            .world_mut()
+            .spawn((
+                Enemy {
+                    state: EnemyState::Exiting,
+                    cover_z: 0.0,
+                    ..test_enemy(EnemyState::Exiting)
+                },
+                MovementSpeed(3.0),
+                Transform::from_xyz(0.0, 0.68, -0.7),
+            ))
+            .id();
+        for _ in 0..2 {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_millis(50));
+            app.update();
+        }
+        let pinned = app.world().get::<Transform>(walker).unwrap().translation.z;
+        assert!(
+            app.world().get::<Enemy>(walker).unwrap().drift.backing > 0.0,
+            "a tenth of a second pinned on the cover should start the backup"
+        );
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_millis(50));
+        app.update();
+        let backed = app.world().get::<Transform>(walker).unwrap().translation.z;
+        assert!(
+            backed < pinned - 0.05,
+            "backup {backed} should be up the road from {pinned}"
+        );
+
+        let mut standing = test_enemy(EnemyState::Advancing);
+        standing.drift.backing = ENEMY_BEHAVIOR.reverse_metres;
+        standing.drift.attempt = Vec2::new(0.0, 1.0);
+        standing.fire_timer = 0.0;
+        let shooter = app
+            .world_mut()
+            .spawn((
+                standing,
+                MovementSpeed(3.0),
+                Transform::from_xyz(6.0, 0.68, -8.0),
+            ))
+            .id();
+        app.world_mut()
+            .spawn((Player, Transform::from_xyz(6.0, 0.75, -2.0)));
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_millis(50));
+        app.update();
+        let after = app.world().get::<Transform>(shooter).unwrap().translation;
+        assert!(
+            (after.z + 8.0).abs() < 0.02,
+            "a ready shot should hold the walker, z {}",
+            after.z
+        );
+        assert_eq!(
+            app.world().get::<Enemy>(shooter).unwrap().drift.backing,
+            ENEMY_BEHAVIOR.reverse_metres
+        );
+        assert!(
+            app.world_mut()
+                .query::<&Projectile>()
+                .iter(app.world())
+                .any(|shot| shot.owner == shooter),
+            "the walker still fires during the backup"
         );
     }
 }

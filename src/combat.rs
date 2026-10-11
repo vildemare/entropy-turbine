@@ -3,7 +3,7 @@
 use bevy::prelude::*;
 
 use crate::audio::{self, SoundBank};
-use crate::enemy::{Cover, Enemy, EnemyReward};
+use crate::enemy::{Cover, Drift, Enemy, EnemyReward, ZapBot};
 use crate::player::Player;
 use crate::session::{Phase, Session};
 use crate::tuning::GUNSLINGER_PLAYER;
@@ -110,6 +110,38 @@ enum Hit {
     Friendly,
 }
 
+fn apply_enemy_damage(
+    commands: &mut Commands,
+    sounds: &SoundBank,
+    visuals: &Visuals,
+    session: &mut Session,
+    damage: u32,
+    position: Vec3,
+    health: &mut Health,
+    reward: Option<&mut EnemyReward>,
+) -> bool {
+    if health.0 == 0 {
+        return false;
+    }
+    health.0 = health.0.saturating_sub(damage);
+    audio::play_game(commands, &sounds.enemy_hit, 0.20, 1.0);
+    if health.0 > 0 {
+        return false;
+    }
+    audio::play_game(commands, &sounds.death, 0.18, 1.3);
+    if let Some(reward) = reward {
+        let points = reward.points();
+        commands.spawn((
+            PointOrb(points),
+            Mesh3d(visuals.orb_mesh.clone()),
+            MeshMaterial3d(visuals.orb_material.clone()),
+            Transform::from_xyz(position.x, 0.35, position.z),
+        ));
+    }
+    session.kills += 1;
+    true
+}
+
 pub fn resolve_hits(
     mut session: ResMut<Session>,
     sounds: Res<SoundBank>,
@@ -128,6 +160,16 @@ pub fn resolve_hits(
         ),
         (With<Enemy>, Without<Player>),
     >,
+    mut zap_bots: Query<
+        (
+            Entity,
+            &Transform,
+            &ZapBot,
+            &mut Health,
+            Option<&mut EnemyReward>,
+        ),
+        (With<ZapBot>, Without<Enemy>, Without<Player>),
+    >,
     mut players: Query<
         (Entity, &Transform, &mut Health, &mut HitCooldown),
         (With<Player>, Without<Enemy>),
@@ -136,6 +178,10 @@ pub fn resolve_hits(
     if session.phase != Phase::Playing {
         return;
     }
+    let zap_targets: Vec<(Entity, Vec3, f32)> = zap_bots
+        .iter()
+        .map(|(entity, transform, bot, _, _)| (entity, transform.translation, bot.radius))
+        .collect();
     for (transform, mut bullet, damage) in &mut bullets {
         if bullet.spent {
             continue;
@@ -180,6 +226,21 @@ pub fn resolve_hits(
                 }
             }
         }
+        for (entity, zap_position, radius) in &zap_targets {
+            if bullet.faction == Faction::Enemy && *entity == bullet.owner {
+                continue;
+            }
+            if let Some(t) = segment_circle_t(start, end, *zap_position, radius + bullet.radius) {
+                if t < nearest {
+                    nearest = t;
+                    hit = Some(if bullet.faction == Faction::Player {
+                        Hit::Enemy(*entity)
+                    } else {
+                        Hit::Friendly
+                    });
+                }
+            }
+        }
         if bullet.faction == Faction::Enemy {
             for (entity, player_transform, health, _) in &mut players {
                 if health.0 == 0 {
@@ -202,27 +263,37 @@ pub fn resolve_hits(
         bullet.spent = true;
         match hit {
             Hit::Enemy(entity) => {
-                if let Ok((_, enemy_transform, _, mut health, reward)) = enemies.get_mut(entity) {
-                    health.0 = health.0.saturating_sub(damage.0);
-                    audio::play_game(&mut commands, &sounds.enemy_hit, 0.20, 1.0);
-                    if health.0 == 0 {
-                        audio::play_game(&mut commands, &sounds.death, 0.18, 1.3);
-                        if let Some(reward) = reward {
-                            let points = reward.points();
-                            commands.spawn((
-                                PointOrb(points),
-                                Mesh3d(visuals.orb_mesh.clone()),
-                                MeshMaterial3d(visuals.orb_material.clone()),
-                                Transform::from_xyz(
-                                    enemy_transform.translation.x,
-                                    0.35,
-                                    enemy_transform.translation.z,
-                                ),
-                            ));
-                        }
-                        commands.entity(entity).despawn();
-                        session.kills += 1;
-                    }
+                let killed = if let Ok((_, enemy_transform, _, mut health, mut reward)) =
+                    enemies.get_mut(entity)
+                {
+                    apply_enemy_damage(
+                        &mut commands,
+                        &sounds,
+                        &visuals,
+                        &mut session,
+                        damage.0,
+                        enemy_transform.translation,
+                        &mut health,
+                        reward.as_deref_mut(),
+                    )
+                } else if let Ok((_, zap_transform, _, mut health, mut reward)) =
+                    zap_bots.get_mut(entity)
+                {
+                    apply_enemy_damage(
+                        &mut commands,
+                        &sounds,
+                        &visuals,
+                        &mut session,
+                        damage.0,
+                        zap_transform.translation,
+                        &mut health,
+                        reward.as_deref_mut(),
+                    )
+                } else {
+                    false
+                };
+                if killed {
+                    commands.entity(entity).despawn();
                 }
             }
             Hit::Player(entity) => {
@@ -230,6 +301,10 @@ pub fn resolve_hits(
                     if cooldown.0 <= 0.0 {
                         health.0 = health.0.saturating_sub(damage.0);
                         if let Ok((_, _, _, _, Some(mut reward))) = enemies.get_mut(bullet.owner) {
+                            reward.hit_player = true;
+                        } else if let Ok((_, _, _, _, Some(mut reward))) =
+                            zap_bots.get_mut(bullet.owner)
+                        {
                             reward.hit_player = true;
                         }
                         audio::play_game(&mut commands, &sounds.player_hurt, 0.35, 1.0);
@@ -435,6 +510,7 @@ mod tests {
             evade_direction: 1.0,
             sight_blocked: false,
             reload_duration: 1.55,
+            drift: Drift::default(),
         }
     }
 

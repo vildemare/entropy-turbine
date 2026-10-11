@@ -18,7 +18,7 @@ pub const GUNSLINGER_PLAYER: PlayerBase = PlayerBase {
     shoot_move_factor: 2.0 / 3.0,
     starting_health: 1000,
     health_per_upgrade: 200,
-    max_health: 3000,
+    max_health: 5000,
     edge_radius: 0.9,
     cover_radius: 0.65,
     hit_radius: 0.72,
@@ -47,10 +47,10 @@ pub struct WeaponProfile {
 pub const GUNSLINGER_WEAPON: WeaponProfile = WeaponProfile {
     fire_interval_ms: 140,
     starting_capacity: 6,
-    max_capacity: 12,
+    max_capacity: 20,
     starting_reload_wait_ms: 1050,
     reload_upgrade_ms: 75,
-    min_reload_wait_ms: 600,
+    min_reload_wait_ms: 150,
     quickload_chamber_ms: 60,
     projectile_speed: 34.0 * 4.0 / 3.0,
     projectile_lifetime: 1.125, // about the same 51 metre range as before
@@ -68,7 +68,34 @@ pub enum EnemyKind {
     Scout,
     Trooper,
     Heavy,
+    ZapBot,
 }
+
+/// Charge cycle for the tracked zap-bots. The whine starts when a player is
+/// inside `bolt_range`. Body size and health stay on [`EnemyKind::ZapBot`]'s
+/// profile.
+#[derive(Clone, Copy, Debug)]
+pub struct ZapBotTuning {
+    pub zap_damage: u32,
+    pub charge_secs: f32,
+    pub cooldown_secs: f32,
+    pub bolt_speed: f32,
+    pub bolt_range: f32,
+    pub spawn_interval: f32,
+    pub spawn_delay: f32,
+    pub max_alive: usize,
+}
+
+pub const ZAP_BOT: ZapBotTuning = ZapBotTuning {
+    zap_damage: 120,
+    charge_secs: 1.5,
+    cooldown_secs: 0.45,
+    bolt_speed: 24.0,
+    bolt_range: 8.0,
+    spawn_interval: 8.0,
+    spawn_delay: 5.5,
+    max_alive: 3,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct EnemyProfile {
@@ -123,6 +150,18 @@ impl EnemyKind {
                 reward_points: 4,
                 visual_scale: 1.22,
             },
+            Self::ZapBot => EnemyProfile {
+                health: 3,
+                radius: 0.9,
+                height: 0.46,
+                move_speed: 1.5,
+                reload_secs: 0.0,
+                shot_damage: 0,
+                shot_speed: 0.0,
+                shot_radius: 0.0,
+                reward_points: 1,
+                visual_scale: 1.15,
+            },
         }
     }
 }
@@ -135,6 +174,11 @@ pub struct EnemyBehavior {
     pub cover_exit_speed_factor: f32,
     pub retreat_speed: f32,
     pub retreat_timeout: f32,
+    /// A walker or zap-bot that is trying to move and has not advanced for this
+    /// long backs up, then its normal step resumes.
+    pub stall_before_reverse: f32,
+    /// How far that backup travels before the normal step resumes.
+    pub reverse_metres: f32,
 }
 
 pub const ENEMY_BEHAVIOR: EnemyBehavior = EnemyBehavior {
@@ -144,4 +188,6 @@ pub const ENEMY_BEHAVIOR: EnemyBehavior = EnemyBehavior {
     cover_exit_speed_factor: 1.5,
     retreat_speed: 6.0,
     retreat_timeout: 3.5,
+    stall_before_reverse: 0.1,
+    reverse_metres: 1.2,
 };

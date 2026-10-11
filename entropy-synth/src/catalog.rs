@@ -19,6 +19,8 @@ pub fn exported() -> Vec<ExportItem> {
         item("impact", impact()),
         item("enemy_hit", enemy_hit()),
         item("player_hurt", player_hurt()),
+        item("zap_charge", zap_charge()),
+        item("zap", zap()),
         item("death", death()),
         item("menu_click", menu_click()),
         item("ambience", ambience()),
@@ -149,15 +151,13 @@ fn player_shot(pitch: f32, seed: u32) -> Sound {
 
     Sound::duration_secs(0.25)
         .layer(
-            Oscillator::sine(hz(90.0))
-                .gain(0.20)
-                .envelope(
-                    Envelope::new()
-                        .attack(0.005)
-                        .decay(0.12)
-                        .sustain(0.0)
-                        .release(0.0),
-                )
+            Oscillator::sine(hz(90.0)).gain(0.20).envelope(
+                Envelope::new()
+                    .attack(0.005)
+                    .decay(0.12)
+                    .sustain(0.0)
+                    .release(0.0),
+            ),
         )
         .layer(
             Oscillator::sine(230.0)
@@ -323,6 +323,62 @@ fn player_hurt() -> Sound {
                         .sustain(0.0)
                         .release(0.04),
                 ),
+        )
+}
+
+fn zap_charge() -> Sound {
+    // One shot, the same length as a cow's charge. A perfect fifth, rendered
+    // into the clip, so the game can play it at speed 1.
+    let rise = Envelope::new()
+        .attack(0.4)
+        .decay(0.0)
+        .sustain(1.0)
+        .release(0.1);
+    Sound::duration_secs(1.5)
+        .layer(
+            Oscillator::triangle(200.0)
+                .sweep_to(300.0)
+                .gain(0.2)
+                .envelope(rise),
+        )
+        .layer(
+            Oscillator::square(100.0)
+                .sweep_to(150.0)
+                .gain(0.08)
+                .envelope(rise),
+        )
+        .layer(
+            Oscillator::sine(400.0)
+                .sweep_to(600.0)
+                .gain(0.045)
+                .envelope(rise),
+        )
+        .layer(
+            Noise::white()
+                .seed(11)
+                .high_pass(900.0)
+                .low_pass(2400.0)
+                .gain(0.04)
+                .envelope(rise),
+        )
+}
+
+fn zap() -> Sound {
+    Sound::duration_secs(0.16)
+        .layer(
+            Oscillator::square(240.0)
+                .sweep_to(70.0)
+                .duration(0.12)
+                .gain(0.24)
+                .envelope(Envelope::fast_decay()),
+        )
+        .layer(
+            Noise::white()
+                .seed(19)
+                .duration(0.05)
+                .high_pass(1400.0)
+                .gain(0.18)
+                .envelope(Envelope::fast_decay()),
         )
 }
 

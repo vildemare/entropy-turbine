@@ -8,6 +8,7 @@ use crate::player::{GunslingerWeapon, Player, PlayerStats};
 use crate::session::{Phase, Session};
 
 pub mod checkpoint;
+pub mod cursor;
 pub mod pause;
 
 #[derive(Resource, Clone)]

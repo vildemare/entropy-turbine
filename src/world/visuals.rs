@@ -14,8 +14,10 @@ pub struct Visuals {
     pub enemy_visor_material: Handle<StandardMaterial>,
     pub bullet_mesh: Handle<Mesh>,
     pub player_bullet_mesh: Handle<Mesh>,
+    pub zap_bolt_mesh: Handle<Mesh>,
     pub bullet_material: Handle<StandardMaterial>,
     pub enemy_bullet_material: Handle<StandardMaterial>,
+    pub zap_bolt_material: Handle<StandardMaterial>,
     pub barricade_mesh: Handle<Mesh>,
     pub barricade_material: Handle<StandardMaterial>,
     pub rubble_mesh: Handle<Mesh>,
@@ -25,6 +27,9 @@ pub struct Visuals {
     pub checkpoint_mesh: Handle<Mesh>,
     pub checkpoint_material: Handle<StandardMaterial>,
 }
+
+/// Length of the zap jolt mesh along local +Z. The projectile sits at the tail.
+pub const ZAP_BOLT_LENGTH: f32 = 4.0;
 
 pub fn load(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>) -> Visuals {
     Visuals {
@@ -37,6 +42,7 @@ pub fn load(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>)
         enemy_visor_material: materials.add(Color::srgb(0.60, 0.14, 0.07)),
         bullet_mesh: meshes.add(Sphere::new(0.17)),
         player_bullet_mesh: meshes.add(player_bullet_mesh()),
+        zap_bolt_mesh: meshes.add(Cuboid::new(1.0, 0.8, ZAP_BOLT_LENGTH)),
         bullet_material: materials.add(StandardMaterial {
             base_color: Color::WHITE,
             alpha_mode: AlphaMode::Blend,
@@ -45,6 +51,12 @@ pub fn load(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>)
             ..default()
         }),
         enemy_bullet_material: materials.add(Color::srgb(0.88, 0.19, 0.07)),
+        zap_bolt_material: materials.add(StandardMaterial {
+            base_color: Color::srgb(1.0, 0.84, 0.45),
+            emissive: LinearRgba::new(6.0, 2.2, 0.35, 1.0),
+            unlit: true,
+            ..default()
+        }),
         barricade_mesh: meshes.add(Cuboid::new(5.4, 1.1, 1.0)),
         barricade_material: materials.add(Color::srgb(0.20, 0.17, 0.13)),
         rubble_mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),

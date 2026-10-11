@@ -6,14 +6,17 @@ use bevy::prelude::*;
 
 mod behavior;
 mod encounter;
+mod zap_bot;
 
 pub use crate::tuning::EnemyKind;
 pub use behavior::{
-    cleanup_behind_camera, move_enemies, separate_enemies, separate_from_cover, shoot_enemies,
+    Drift, cleanup_behind_camera, move_enemies, separate_enemies, separate_from_cover,
+    shoot_enemies,
 };
 pub use encounter::{
     EncounterDirector, WAVES_PER_PHASE, place_covers, spawn_groups, spawn_reinforcements,
 };
+pub use zap_bot::{ZapBot, drive_zap_bots, spawn_zap_bots};
 
 #[derive(Component)]
 pub struct EnemyReward {
@@ -67,6 +70,7 @@ pub struct Enemy {
     pub evade_direction: f32,
     pub sight_blocked: bool,
     pub reload_duration: f32,
+    pub drift: Drift,
 }
 
 #[derive(Component)]
@@ -88,5 +92,7 @@ mod tests {
         assert_eq!(EnemyKind::Scout.profile().shot_speed, 13.0);
         assert_eq!(EnemyKind::Trooper.profile().shot_speed, 13.0);
         assert_eq!(EnemyKind::Heavy.profile().shot_speed, 13.0);
+        assert_eq!(EnemyKind::ZapBot.profile().health, 3);
+        assert_eq!(EnemyKind::ZapBot.profile().shot_damage, 0);
     }
 }

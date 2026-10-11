@@ -3,18 +3,22 @@
 use std::collections::VecDeque;
 
 use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
 
-use super::{AttackPhase, Cover, Enemy, EnemyKind, EnemyReward, EnemyState, Tactic};
+use super::{AttackPhase, Cover, Drift, Enemy, EnemyKind, EnemyReward, EnemyState, Tactic};
 use crate::combat::Health;
 use crate::player::MovementSpeed;
 use crate::session::{Phase, Session};
-use crate::tuning::ENEMY_BEHAVIOR;
+use crate::tuning::{ENEMY_BEHAVIOR, ZAP_BOT};
 use crate::world::camera::{self, FollowCamera};
 use crate::world::route;
 use crate::world::visuals::Visuals;
 
 const MAX_ENEMIES: usize = 90;
 const COVER_WIDTH: f32 = 5.4;
+/// Obstacles are built this far ahead of the camera center, about twice the old
+/// lead, so a cow meets a barricade with room to turn.
+const OBSTACLE_PLACE_AHEAD: f32 = 48.0;
 const RUBBLE_SIZE: Vec3 = Vec3::new(1.3, 0.8, 1.4);
 const FIELD_COVER_SIZE: Vec3 = Vec3::new(2.1, 1.0, 1.9);
 pub const WAVES_PER_PHASE: u32 = 10;
@@ -44,6 +48,7 @@ pub struct EncounterDirector {
     pub group_number: u32,
     pub phase_number: u32,
     pub checkpoint_z: Option<f32>,
+    pub(crate) zap_timer: f32,
     random_state: u32,
 }
 
@@ -55,6 +60,7 @@ impl Default for EncounterDirector {
             group_number: 0,
             phase_number: 1,
             checkpoint_z: None,
+            zap_timer: ZAP_BOT.spawn_delay,
             random_state: 0x8b45_73cf,
         };
         director.prepare_phase(-23.0);
@@ -70,6 +76,7 @@ impl EncounterDirector {
             .unwrap_or(self.planned_checkpoint_z);
         self.phase_number += 1;
         self.group_number = 0;
+        self.zap_timer = ZAP_BOT.spawn_delay;
         self.prepare_phase(checkpoint_z - 25.0);
     }
 
@@ -97,7 +104,7 @@ impl EncounterDirector {
         self.planned_checkpoint_z = self.planned_waves.back().unwrap().z - 25.0;
     }
 
-    fn random(&mut self) -> f32 {
+    pub(crate) fn random(&mut self) -> f32 {
         self.random_state ^= self.random_state << 13;
         self.random_state ^= self.random_state >> 17;
         self.random_state ^= self.random_state << 5;
@@ -145,13 +152,21 @@ pub fn place_covers(
         return;
     };
     let center_z = camera.translation.z - camera::CAMERA_BACK_OFFSET;
-    let Some(wave) = director.planned_waves.front().copied() else {
-        return;
-    };
-    if wave.z < center_z - 24.0 {
-        return;
+    while let Some(wave) = director.planned_waves.front().copied() {
+        if wave.z < center_z - OBSTACLE_PLACE_AHEAD {
+            break;
+        }
+        director.planned_waves.pop_front();
+        place_wave(&mut director, &mut commands, &visuals, wave);
     }
-    director.planned_waves.pop_front();
+}
+
+fn place_wave(
+    director: &mut EncounterDirector,
+    commands: &mut Commands,
+    visuals: &Visuals,
+    wave: PlannedWave,
+) {
     let PlannedWave {
         index,
         x,
@@ -167,7 +182,7 @@ pub fn place_covers(
             height: 1.1,
         },
         CoverSite {
-            timer: 1.2,
+            timer: 0.0,
             formation,
             count: plan.count,
             group_id: index,
@@ -230,13 +245,19 @@ pub fn spawn_groups(
     mut commands: Commands,
     mut sites: Query<(&Transform, &mut CoverSite), With<Cover>>,
     enemies: Query<Entity, With<Enemy>>,
+    cameras: Query<(&Camera, &Transform), With<FollowCamera>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
 ) {
     if session.phase != Phase::Playing {
         return;
     }
+    let Some((camera, camera_transform)) = cameras.iter().next() else {
+        return;
+    };
+    let front_z = camera::visible_front_z(camera, camera_transform, windows.iter().next());
     let mut live_count = enemies.iter().len();
     for (cover, mut site) in &mut sites {
-        if site.spawned {
+        if site.spawned || cover.translation.z < front_z {
             continue;
         }
         site.timer -= time.delta_secs();
@@ -297,6 +318,7 @@ pub fn spawn_groups(
                         evade_direction: side,
                         sight_blocked: false,
                         reload_duration: profile.reload_secs,
+                        drift: Drift::default(),
                     },
                     Health(profile.health),
                     EnemyReward {
@@ -386,6 +408,7 @@ pub fn spawn_reinforcements(
                         evade_direction: side,
                         sight_blocked: false,
                         reload_duration: profile.reload_secs,
+                        drift: Drift::default(),
                     },
                     Health(profile.health),
                     EnemyReward {
@@ -409,6 +432,7 @@ fn spawn_enemy_visual(commands: &mut Commands, visuals: &Visuals, actor: Entity,
         EnemyKind::Scout => &visuals.scout_material,
         EnemyKind::Trooper => &visuals.trooper_material,
         EnemyKind::Heavy => &visuals.heavy_material,
+        EnemyKind::ZapBot => return,
     };
     let iron = &visuals.enemy_iron_material;
     let brass = &visuals.enemy_brass_material;
@@ -559,6 +583,89 @@ mod tests {
         assert_eq!(director.planned_waves.len(), WAVES_PER_PHASE as usize);
         assert_eq!(director.checkpoint_z, None);
     }
+
+    #[test]
+    fn a_wave_more_than_forty_eight_metres_ahead_stays_unbuilt() {
+        let mut app = App::new();
+        app.insert_resource(Session::default())
+            .insert_resource(Visuals::default())
+            .insert_resource(EncounterDirector::default())
+            .add_systems(Update, place_covers);
+        app.world_mut().spawn((
+            FollowCamera,
+            Transform::from_xyz(0.0, camera::CAMERA_HEIGHT, 50.0),
+        ));
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<EncounterDirector>()
+                .planned_waves
+                .len(),
+            WAVES_PER_PHASE as usize
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<&CoverSite>()
+                .iter(app.world())
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn defenders_spawn_when_the_barricade_reaches_the_top_of_the_view() {
+        let mut app = App::new();
+        app.insert_resource(Session::default())
+            .insert_resource(Time::<()>::default())
+            .insert_resource(Visuals::default())
+            .insert_resource(EncounterDirector::default())
+            .add_systems(Update, spawn_groups);
+        app.world_mut().spawn((
+            FollowCamera,
+            Camera::default(),
+            Transform::from_xyz(0.0, camera::CAMERA_HEIGHT, camera::CAMERA_BACK_OFFSET),
+        ));
+        let waiting = app
+            .world_mut()
+            .spawn((
+                Cover {
+                    half_width: 2.7,
+                    half_depth: 0.5,
+                    height: 1.1,
+                },
+                CoverSite {
+                    timer: 0.0,
+                    formation: Formation::Row,
+                    count: 2,
+                    group_id: 1,
+                    heavy_count: 0,
+                    spawned: false,
+                    reinforcement_planned: false,
+                    reinforcements_sent: false,
+                },
+                Transform::from_xyz(0.0, 0.55, -40.0),
+            ))
+            .id();
+        app.update();
+        assert!(!app.world().get::<CoverSite>(waiting).unwrap().spawned);
+        assert_eq!(
+            app.world_mut().query::<&Enemy>().iter(app.world()).count(),
+            0
+        );
+
+        app.world_mut()
+            .get_mut::<Transform>(waiting)
+            .unwrap()
+            .translation
+            .z = -20.0;
+        app.update();
+        assert!(app.world().get::<CoverSite>(waiting).unwrap().spawned);
+        assert_eq!(
+            app.world_mut().query::<&Enemy>().iter(app.world()).count(),
+            2
+        );
+    }
+
     #[test]
     fn visible_barricade_end_blocks_stop_shots_outside_the_center_wall() {
         let mut app = App::new();
@@ -703,6 +810,7 @@ mod tests {
                     evade_direction: 1.0,
                     sight_blocked: false,
                     reload_duration: 1.5,
+                    drift: Drift::default(),
                 },
                 Transform::from_xyz(0.0, 0.68, -20.0),
             ))

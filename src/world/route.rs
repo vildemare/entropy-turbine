@@ -9,8 +9,10 @@ const VISIBLE_LENGTH: f32 = 300.0;
 const BOULDER_SPACING: f32 = 3.0;
 const BOULDER_HALF_COUNT: i32 = 48;
 const BOULDER_COUNT: i32 = BOULDER_HALF_COUNT * 2 + 1;
-const BEND_LENGTH: f32 = 90.0;
-const MAX_OFFSET: f32 = 4.0;
+const BEND_LENGTH: f32 = 48.0;
+const MAX_OFFSET: f32 = 11.0;
+/// Steepest smoothstep between opposite offsets, rise over run.
+const MAX_SLOPE: f32 = 1.5 * (2.0 * MAX_OFFSET) / BEND_LENGTH;
 
 #[derive(Component)]
 pub(crate) struct TerrainVisual;
@@ -24,9 +26,8 @@ pub(crate) struct RoadMesh {
     center_segment: i32,
 }
 
-// A cubic Bezier with coincident end handles gives horizontal tangents at
-// every control point. Adjacent offsets differ by at most eight metres, so
-// the maximum slope is 1.5 * 8 / 90, below the requested 15%.
+// Smoothstep between segment offsets. End tangents are flat, and the steepest
+// rise between opposite swings is `MAX_SLOPE`.
 pub fn centerline_x(z: f32) -> f32 {
     if z >= 0.0 {
         return 0.0;
@@ -56,11 +57,12 @@ fn offset_at(segment: u32) -> f32 {
     value ^= value >> 16;
     value = value.wrapping_mul(0x85eb_ca6b);
     value ^= value >> 13;
-    // A few flat sections make the bends occasional rather than constant.
+    // A few flat sections leave a straight between bends.
     if value % 5 == 0 {
         0.0
     } else {
-        (value % 801) as f32 * 0.01 - MAX_OFFSET
+        let steps = (MAX_OFFSET * 200.0) as u32;
+        (value % (steps + 1)) as f32 * 0.01 - MAX_OFFSET
     }
 }
 
@@ -214,14 +216,30 @@ mod tests {
     }
 
     #[test]
-    fn bends_are_continuous_and_never_steeper_than_fifteen_percent() {
+    fn bends_stay_continuous_and_within_the_wiggle() {
         assert_eq!(centerline_x(0.0), 0.0);
+        let mut furthest = 0.0_f32;
+        let mut steepest = 0.0_f32;
         for step in 0..10_000 {
             let z = -step as f32 * 0.5;
+            furthest = furthest.max(centerline_x(z).abs());
+            steepest = steepest.max(centerline_slope(z).abs());
             assert!(centerline_x(z).abs() <= MAX_OFFSET + 0.001);
-            assert!(centerline_slope(z).abs() <= 0.15);
-            assert!((centerline_x(z) - centerline_x(z - 0.01)).abs() <= 0.0015);
+            assert!(
+                centerline_slope(z).abs() <= MAX_SLOPE + 0.001,
+                "slope {} at {z}",
+                centerline_slope(z)
+            );
+            assert!((centerline_x(z) - centerline_x(z - 0.01)).abs() <= MAX_SLOPE * 0.01 + 0.0001);
         }
+        assert!(
+            furthest > 8.0,
+            "the centerline should swing well past the old four metres, got {furthest}"
+        );
+        assert!(
+            steepest > 0.35,
+            "a bend should read on screen, slope {steepest}"
+        );
     }
 
     #[test]

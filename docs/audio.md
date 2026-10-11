@@ -10,4 +10,6 @@ Sounds are authored in the `entropy-synth` crate in this repo. A definition is R
 
 The game loads those WAV paths. Bevy's `file_watcher` feature reloads a file when export replaces it. The next time that cue plays, it is the new sound. Restart after a code change. A change to a WAV alone does not need one.
 
+A zap-bot's charge is one rising whine, `zap_charge.wav`, about a second and a half long. It plays when a player enters the jolt's reach. The pitch climbs a fifth across that clip, and the game plays it at normal speed. The zap itself is a short crack, `zap.wav`, played when the jolt leaves the prongs.
+
 The Gunslinger's plasma thump is the player weapon in the build. The Mage's cast and the Steamist's charge and burst need their own short cues when those weapons exist: a fuel ignition for the patch, a rising pressure tick while the Steamist holds, and a steam crack when the canister lands. Those cues are not recorded yet. They should stay as short as the plasma thump so a dense fight can still be read.

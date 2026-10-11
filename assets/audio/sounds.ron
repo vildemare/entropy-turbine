@@ -68,6 +68,20 @@
             duration_secs: 0.42,
         ),
         (
+            id: "zap_charge",
+            file: "zap_charge.wav",
+            origin: synthesized,
+            definition: "1489ae9f519d5a45dae0264ff83fb5ef49d562e068f4767e28cf135869702aed",
+            duration_secs: 1.5,
+        ),
+        (
+            id: "zap",
+            file: "zap.wav",
+            origin: synthesized,
+            definition: "ea571ee07559b236a207938ba4fc51b2986c97ef78de9492fdb1373f9328c58c",
+            duration_secs: 0.16,
+        ),
+        (
             id: "death",
             file: "death.wav",
             origin: synthesized,
