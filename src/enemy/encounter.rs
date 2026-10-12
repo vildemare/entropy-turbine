@@ -5,11 +5,14 @@ use std::collections::VecDeque;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
+use super::behavior::{self, RIFLE_DRILL};
+use super::grenadier::{self, WALKER_HULL};
+use super::zap_bot::ZAP_SCHEDULE;
 use super::{AttackPhase, Cover, Drift, Enemy, EnemyKind, EnemyReward, EnemyState, Tactic};
-use crate::combat::Health;
+use crate::combat::{Abilities, Faction, Health, HitCircle};
 use crate::player::MovementSpeed;
 use crate::session::{Phase, Session};
-use crate::tuning::{ENEMY_BEHAVIOR, ZAP_BOT};
+use crate::units::units;
 use crate::world::camera::{self, FollowCamera};
 use crate::world::route;
 use crate::world::visuals::Visuals;
@@ -39,6 +42,7 @@ pub struct CoverSite {
     spawned: bool,
     reinforcement_planned: bool,
     reinforcements_sent: bool,
+    grenadier: bool,
 }
 
 #[derive(Resource)]
@@ -60,7 +64,7 @@ impl Default for EncounterDirector {
             group_number: 0,
             phase_number: 1,
             checkpoint_z: None,
-            zap_timer: ZAP_BOT.spawn_delay,
+            zap_timer: units(ZAP_SCHEDULE.delay),
             random_state: 0x8b45_73cf,
         };
         director.prepare_phase(-23.0);
@@ -76,7 +80,7 @@ impl EncounterDirector {
             .unwrap_or(self.planned_checkpoint_z);
         self.phase_number += 1;
         self.group_number = 0;
-        self.zap_timer = ZAP_BOT.spawn_delay;
+        self.zap_timer = units(ZAP_SCHEDULE.delay);
         self.prepare_phase(checkpoint_z - 25.0);
     }
 
@@ -117,6 +121,7 @@ struct WavePlan {
     count: usize,
     heavy_count: usize,
     reinforcements: bool,
+    grenadier: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -135,7 +140,19 @@ fn wave_plan(phase: u32, wave: u32) -> WavePlan {
         count: (3 + (wave / 3) as usize + tier).min(7),
         heavy_count: usize::from(wave >= 4) + usize::from(wave >= 8 && phase >= 2),
         reinforcements: wave == 3 || wave == 6 || wave == 9 || (phase >= 2 && wave == 7),
+        grenadier: wave_has_grenadier(phase, wave),
     }
+}
+
+/// The last wave of the first phase always brings one grenade walker. Later
+/// waves include one about one time in eight, from the phase and wave index
+/// so the route's random stream stays put.
+fn wave_has_grenadier(phase: u32, wave: u32) -> bool {
+    if phase == 1 {
+        return wave + 1 == WAVES_PER_PHASE;
+    }
+    let mixed = phase.wrapping_mul(0x045d_9f3b) ^ wave.wrapping_mul(0x119d_e1f3) ^ 0xa5a5_5a5a;
+    mixed % 8 == 0
 }
 
 pub fn place_covers(
@@ -176,6 +193,7 @@ fn place_wave(
         plan,
     } = wave;
     commands.spawn((
+        Abilities::solid(),
         Cover {
             half_width: COVER_WIDTH * 0.5,
             half_depth: 0.5,
@@ -190,6 +208,7 @@ fn place_wave(
             spawned: false,
             reinforcement_planned: plan.reinforcements,
             reinforcements_sent: false,
+            grenadier: plan.grenadier,
         },
         Mesh3d(visuals.barricade_mesh.clone()),
         MeshMaterial3d(visuals.barricade_material.clone()),
@@ -197,6 +216,7 @@ fn place_wave(
     ));
     for side in [-1.0, 1.0] {
         commands.spawn((
+            Abilities::solid(),
             Cover {
                 half_width: RUBBLE_SIZE.x * 0.5,
                 half_depth: RUBBLE_SIZE.z * 0.5,
@@ -216,6 +236,7 @@ fn place_wave(
     // incoming fire between barricades.
     for (field_x, offset) in field_x.into_iter().zip([9.0, -11.0]) {
         commands.spawn((
+            Abilities::solid(),
             Cover {
                 half_width: FIELD_COVER_SIZE.x * 0.5,
                 half_depth: FIELD_COVER_SIZE.z * 0.5,
@@ -276,7 +297,7 @@ pub fn spawn_groups(
             } else {
                 EnemyKind::Trooper
             };
-            let profile = kind.profile();
+            let gunner = behavior::gunner(kind);
             let slot_x = cover.translation.x + slot * 1.45;
             let start_x = match site.formation {
                 Formation::Row => slot_x,
@@ -293,7 +314,7 @@ pub fn spawn_groups(
             let flank_x = route::clamp_actor_x(
                 cover.translation.x + side * 4.3,
                 cover.translation.z,
-                profile.radius,
+                units(gunner.hull.radius),
             );
             let enemy_entity = commands
                 .spawn((
@@ -306,30 +327,36 @@ pub fn spawn_groups(
                         } else {
                             Tactic::Direct
                         },
-                        radius: profile.radius,
-                        height: profile.height,
+                        radius: units(gunner.hull.radius),
+                        height: units(gunner.hull.height),
                         cover_z: cover.translation.z,
                         slot_x,
                         flank_x,
                         hold_timer: 0.45 + director.random() * 0.45,
                         fire_timer: 0.2 + director.random() * 0.75,
                         attack_phase: AttackPhase::Burst,
-                        shots_left: ENEMY_BEHAVIOR.burst_shots,
+                        shots_left: RIFLE_DRILL.burst,
                         evade_direction: side,
                         sight_blocked: false,
-                        reload_duration: profile.reload_secs,
+                        reload_duration: units(gunner.rifle.reload),
                         drift: Drift::default(),
                     },
-                    Health(profile.health),
+                    Health(gunner.hull.health),
+                    Abilities::enemy(),
+                    HitCircle {
+                        radius: units(gunner.hull.radius),
+                        faction: Faction::Enemy,
+                        swell: true,
+                    },
                     EnemyReward {
                         kind,
                         hit_player: false,
                     },
-                    MovementSpeed(profile.move_speed),
+                    MovementSpeed(units(gunner.pace.speed)),
                     Transform::from_xyz(
                         start_x + route::centerline_x(start_z)
                             - route::centerline_x(cover.translation.z),
-                        profile.height,
+                        units(gunner.hull.height),
                         start_z,
                     ),
                     GlobalTransform::default(),
@@ -337,6 +364,23 @@ pub fn spawn_groups(
                 ))
                 .id();
             spawn_enemy_visual(&mut commands, &visuals, enemy_entity, kind);
+        }
+        if site.grenadier {
+            let side = if director.random() < 0.5 { -1.0 } else { 1.0 };
+            let z = cover.translation.z - 8.0;
+            let x = route::clamp_actor_x(
+                cover.translation.x + side * 6.5,
+                z,
+                units(WALKER_HULL.radius),
+            );
+            let seed = site.group_id.wrapping_mul(0x9e37_79b9) | 1;
+            grenadier::spawn(
+                &mut commands,
+                &visuals,
+                Vec3::new(x, units(WALKER_HULL.height), z),
+                side,
+                seed,
+            );
         }
     }
 }
@@ -382,7 +426,7 @@ pub fn spawn_reinforcements(
             } else {
                 EnemyKind::Scout
             };
-            let profile = kind.profile();
+            let gunner = behavior::gunner(kind);
             let side = if index % 2 == 0 { -1.0 } else { 1.0 };
             let x = route::centerline_x(z) + center_x + (index as f32 - 1.0) * 2.0;
             let actor = commands
@@ -396,27 +440,33 @@ pub fn spawn_reinforcements(
                         } else {
                             Tactic::Straight
                         },
-                        radius: profile.radius,
-                        height: profile.height,
+                        radius: units(gunner.hull.radius),
+                        height: units(gunner.hull.height),
                         cover_z: z,
                         slot_x: x,
                         flank_x: x,
                         hold_timer: 0.0,
                         fire_timer: 0.35 + director.random() * 0.6,
                         attack_phase: AttackPhase::Burst,
-                        shots_left: ENEMY_BEHAVIOR.burst_shots,
+                        shots_left: RIFLE_DRILL.burst,
                         evade_direction: side,
                         sight_blocked: false,
-                        reload_duration: profile.reload_secs,
+                        reload_duration: units(gunner.rifle.reload),
                         drift: Drift::default(),
                     },
-                    Health(profile.health),
+                    Health(gunner.hull.health),
+                    Abilities::enemy(),
+                    HitCircle {
+                        radius: units(gunner.hull.radius),
+                        faction: Faction::Enemy,
+                        swell: true,
+                    },
                     EnemyReward {
                         kind,
                         hit_player: false,
                     },
-                    MovementSpeed(profile.move_speed),
-                    Transform::from_xyz(x, profile.height, z),
+                    MovementSpeed(units(gunner.pace.speed)),
+                    Transform::from_xyz(x, units(gunner.hull.height), z),
                     GlobalTransform::default(),
                     Visibility::default(),
                 ))
@@ -427,12 +477,12 @@ pub fn spawn_reinforcements(
 }
 
 fn spawn_enemy_visual(commands: &mut Commands, visuals: &Visuals, actor: Entity, kind: EnemyKind) {
-    let size = kind.profile().visual_scale;
+    let size = behavior::gunner(kind).hull.visual_scale;
     let coat = match kind {
         EnemyKind::Scout => &visuals.scout_material,
         EnemyKind::Trooper => &visuals.trooper_material,
         EnemyKind::Heavy => &visuals.heavy_material,
-        EnemyKind::ZapBot => return,
+        EnemyKind::ZapBot | EnemyKind::Grenadier => return,
     };
     let iron = &visuals.enemy_iron_material;
     let brass = &visuals.enemy_brass_material;
@@ -520,8 +570,9 @@ fn spawn_enemy_visual(commands: &mut Commands, visuals: &Visuals, actor: Entity,
 mod tests {
     use super::*;
 
+    use crate::ability::Struck;
     use crate::audio::SoundBank;
-    use crate::combat::{self, Damage, Faction, Projectile};
+    use crate::combat::{self, Damage, Delivery, Faction, Material, Projectile};
 
     #[test]
     fn phase_one_has_ten_escalating_waves_and_three_reinforcements() {
@@ -533,6 +584,8 @@ mod tests {
             vec![3, 3, 3, 4, 4, 4, 5, 5, 5, 6]
         );
         assert_eq!(plans.iter().filter(|plan| plan.reinforcements).count(), 3);
+        assert!(plans.last().unwrap().grenadier);
+        assert_eq!(plans.iter().filter(|plan| plan.grenadier).count(), 1);
         assert_eq!(plans.iter().map(|plan| plan.heavy_count).sum::<usize>(), 6);
         assert!(wave_plan(2, 9).count > wave_plan(1, 9).count);
         assert!(wave_plan(2, 9).heavy_count > wave_plan(1, 9).heavy_count);
@@ -582,6 +635,25 @@ mod tests {
         assert_eq!(director.planned_waves.front().unwrap().z, -405.0);
         assert_eq!(director.planned_waves.len(), WAVES_PER_PHASE as usize);
         assert_eq!(director.checkpoint_z, None);
+    }
+
+    #[test]
+    fn later_waves_rarely_include_a_grenade_walker() {
+        let mut included = 0;
+        let mut total = 0;
+        for phase in 2..8 {
+            for wave in 0..WAVES_PER_PHASE {
+                total += 1;
+                if wave_has_grenadier(phase, wave) {
+                    included += 1;
+                }
+            }
+        }
+        assert!(included > 0, "a later phase should sometimes bring one");
+        assert!(
+            included * 4 < total,
+            "included {included} of {total}, which is too often"
+        );
     }
 
     #[test]
@@ -642,6 +714,7 @@ mod tests {
                     spawned: false,
                     reinforcement_planned: false,
                     reinforcements_sent: false,
+                    grenadier: false,
                 },
                 Transform::from_xyz(0.0, 0.55, -40.0),
             ))
@@ -673,6 +746,7 @@ mod tests {
             .insert_resource(Visuals::default())
             .insert_resource(SoundBank::default())
             .insert_resource(EncounterDirector::default())
+            .add_message::<Struck>()
             .add_systems(Update, (place_covers, combat::resolve_hits).chain());
         let planned = *app
             .world()
@@ -720,6 +794,8 @@ mod tests {
                     previous: Vec3::new(x, 0.75, center_z + 3.0),
                     spent: false,
                     faction: Faction::Player,
+                    material: Material::Plasma,
+                    delivery: Delivery::Energy,
                     owner: Entity::PLACEHOLDER,
                 },
                 Damage(1),
@@ -749,6 +825,8 @@ mod tests {
                     previous: field_position + Vec3::new(0.0, 0.25, 3.0),
                     spent: false,
                     faction: Faction::Player,
+                    material: Material::Plasma,
+                    delivery: Delivery::Energy,
                     owner: Entity::PLACEHOLDER,
                 },
                 Damage(1),
@@ -786,6 +864,7 @@ mod tests {
                     spawned: true,
                     reinforcement_planned: true,
                     reinforcements_sent: false,
+                    grenadier: false,
                 },
                 Transform::from_xyz(0.0, 0.55, -23.0),
             ))
@@ -806,7 +885,7 @@ mod tests {
                     hold_timer: 0.0,
                     fire_timer: 0.0,
                     attack_phase: AttackPhase::Burst,
-                    shots_left: ENEMY_BEHAVIOR.burst_shots,
+                    shots_left: RIFLE_DRILL.burst,
                     evade_direction: 1.0,
                     sight_blocked: false,
                     reload_duration: 1.5,

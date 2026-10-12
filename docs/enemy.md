@@ -50,7 +50,7 @@ obstacle instead of kissing it. When a cow is trying to drive and has not advanc
 up and peels toward the other side, then takes up its lane again. That backup is still driving: the cow does not
 stop, and a charge that is due keeps rising and fires.
 
-One paired player hit drops one. They are extra bodies, and killing them is meant to feel easy.
+Each cow wears a plate that takes 1 off a hit. The Gunslinger's round is 2, so 1 gets through, and the plate rings when it does. Health is 2, so one paired hit still drops the cow. They are extra bodies, and killing them is meant to feel easy.
 
 They have no gun. The prongs stay dark until a player steps inside the jolt's reach, about eight metres. That step
 starts the charge: one rising whine of about a second and a half, and the prongs brighten with it. At the top of the
@@ -58,6 +58,33 @@ rise the cow throws a bright jolt toward the nearest player. The rise finishes a
 has moved out of reach, and then it travels along the cow's facing. The jolt travels about eight metres, so it can be
 stepped off of, and it stops on cover. It stings less than a gunner's shot. The prongs then go dark for a short rest,
 and the next whine waits until a player is inside that reach.
+
+## Grenade walkers
+
+In this build. A grenade walker is a low mech with wide feet set out to the sides and a four-tube launcher
+on the hull. It arrives with a wave.
+
+The last wave of the first phase always includes one. After that, a later wave includes one about one
+time in eight.
+
+It walks a diagonal down the road and stays off cover. When the next step would meet a barricade, rubble,
+or the edge of the road, it turns ninety degrees away from that obstacle and continues. Hit points are 4.
+In front of those sits a shield of 4 that, once emptied, stays down for 4 seconds and then refills.
+While the shield is up the walker wears the faint blue shimmer. A paired plasma hit empties the shield.
+Another paired hit during those 4 quiet seconds drops the body.
+
+When a player comes within 16 metres it stops, turns toward that player, and aims for 2 seconds. It then
+throws four grenades in one volley. The aim point is the center of the pattern. The four landings are
+spread around that center, kept apart, and some of them pass the aim point. Each landing shows a rotating
+red cross on the ground with a circle around it. The circle's rim is 2 metres from the cross, and that is
+the whole of the blast. Damage is 80 at the center and falls off to nothing at the rim. Every body
+standing in a circle takes its share, including other machines and the walker when it is inside one.
+When several marks land in the same moment, the player's grace answers the strongest and the lighter
+ones find that grace already up. The grenades are in the air for about a second. Reload is one second for each grenade, four seconds for the
+volley, and the walker walks during that reload. A clear player starts another aim once the reload is
+done.
+
+A defeated walker drops 3 points.
 
 ## Entropy Turbines
 
@@ -74,12 +101,10 @@ while it is down, and step back before it lifts.
 
 Later bosses differ from that fight. The locked rule is the climb in danger, not one pattern repeated at a larger size.
 
-Later, build enemy capabilities from explicit parts, as with the player's upgrade build: a body type, weapon, and any
-special traits should produce movement, aim, health, and attack stats when the enemy spawns. The combination matters: a
-small enemy carrying a heavy gun should move and aim more slowly than that body would with a light weapon. This should
-make new enemy and weapon combinations easy to plan and balance without scattering stat adjustments through movement and
-shooting code. The three gunners are working well, so leave their behavior as it is while other parts of the game
-take priority.
+A spawned machine is a hull and a pace, plus the weapon it actually carries. Rifle squads carry a rifle.
+A zap-bot carries a jolt and a plate. A grenade walker carries a launcher and a shield. Those definitions
+use plain integers. 1000 units is 1 metre and 1 second. Cover entry and exit stay plain factors. A heavier weapon that also changes
+the pace is still to be built. The three gunners keep the behavior they have.
 
 Enemies do not yet react to ground hazards. A [Mage](players/mage.md) patch or a [Steamist](players/steamist.md) burst
 can damage them where they stand. Pathing around a patch waits until that hazard is readable on its own.

@@ -11,15 +11,86 @@ pub mod input;
 use animation::{CharacterAsset, CharacterModel};
 
 use crate::audio::{self, SoundBank};
-use crate::combat::{Damage, Faction, Health, HitCooldown, Lifetime, Projectile};
+use crate::combat::{
+    Abilities, Damage, Delivery, Faction, Health, HitCircle, HitCooldown, Lifetime, Material,
+    Projectile,
+};
 use crate::enemy::{self, Cover};
 use crate::session::{Phase, Session};
-use crate::tuning::{GUNSLINGER_PLAYER, GUNSLINGER_WEAPON};
+use crate::units::units;
 use crate::world::camera;
 use crate::world::route;
 use crate::world::visuals::Visuals;
 
 pub const PLAYER_Y: f32 = 0.75;
+
+/// Pace and body. Speed and the three radii are units: 1000 units is 1 metre.
+/// `shoot_move_factor` is the plain factor applied while firing.
+#[derive(Clone, Copy, Debug)]
+pub struct PlayerBase {
+    pub move_speed: u32,
+    pub shoot_move_factor: f32,
+    pub starting_health: u32,
+    pub health_per_upgrade: u32,
+    pub max_health: u32,
+    pub edge_radius: u32,
+    pub cover_radius: u32,
+    pub hit_radius: u32,
+}
+
+pub const GUNSLINGER_PLAYER: PlayerBase = PlayerBase {
+    move_speed: 8000,
+    shoot_move_factor: 0.667,
+    starting_health: 1000,
+    health_per_upgrade: 200,
+    max_health: 5000,
+    edge_radius: 900,
+    cover_radius: 650,
+    hit_radius: 720,
+};
+
+/// The paired plasma revolver.
+///
+/// Reload waits are milliseconds, which is the same 1000-unit second.
+/// Slug speed, lifetime, and radius are units. `projectile_scale` is the mesh factor.
+#[derive(Clone, Copy, Debug)]
+pub struct WeaponProfile {
+    pub fire_interval_ms: u64,
+    pub starting_capacity: u8,
+    pub max_capacity: u8,
+    pub starting_reload_wait_ms: u32,
+    pub reload_upgrade_ms: u32,
+    pub min_reload_wait_ms: u32,
+    pub quickload_chamber_ms: u64,
+    pub projectile_speed: u32,
+    pub projectile_lifetime: u32,
+    pub projectile_damage: u32,
+    pub projectile_radius: u32,
+    pub projectile_scale: f32,
+    pub pair_spread: f32,
+    pub pair_muzzle_offset: f32,
+    pub muzzle_forward: f32,
+    pub muzzle_side: f32,
+}
+
+pub const GUNSLINGER_WEAPON: WeaponProfile = WeaponProfile {
+    fire_interval_ms: 140,
+    starting_capacity: 6,
+    max_capacity: 20,
+    starting_reload_wait_ms: 1050,
+    reload_upgrade_ms: 75,
+    min_reload_wait_ms: 150,
+    quickload_chamber_ms: 60,
+    projectile_speed: 45_300,
+    projectile_lifetime: 1125,
+    projectile_damage: 2,
+    projectile_radius: 113,
+    projectile_scale: 0.667,
+    pair_spread: 0.009,
+    pair_muzzle_offset: 0.025,
+    muzzle_forward: 0.95,
+    muzzle_side: 0.34,
+};
 
 pub fn reload_wait_ms_for(purchases: u32) -> u32 {
     GUNSLINGER_WEAPON
@@ -307,17 +378,23 @@ pub fn spawn_player(commands: &mut Commands, character: &CharacterAsset, positio
             KeyboardMouseControlled,
             PlayerSlot(0),
             PlayerIntent::default(),
-            MovementSpeed(GUNSLINGER_PLAYER.move_speed),
+            MovementSpeed(units(GUNSLINGER_PLAYER.move_speed)),
             FireCooldown(Duration::ZERO),
             build,
             stats,
             GunslingerWeapon::default(),
             HitCooldown::default(),
             Health(stats.max_health),
+            Abilities::player(),
             Transform::from_translation(position),
             Visibility::default(),
         ))
         .id();
+    commands.entity(actor).insert(HitCircle {
+        radius: units(GUNSLINGER_PLAYER.hit_radius),
+        faction: Faction::Player,
+        swell: false,
+    });
     commands.spawn((
         CharacterModel,
         WorldAssetRoot(character.scene.clone()),
@@ -379,12 +456,12 @@ pub fn move_players(
         transform.translation.x = route::clamp_actor_x(
             transform.translation.x,
             transform.translation.z,
-            GUNSLINGER_PLAYER.edge_radius,
+            units(GUNSLINGER_PLAYER.edge_radius),
         );
         for (cover_transform, cover) in &covers {
             enemy::separate_from_cover(
                 &mut transform.translation,
-                GUNSLINGER_PLAYER.cover_radius,
+                units(GUNSLINGER_PLAYER.cover_radius),
                 cover_transform.translation,
                 cover,
             );
@@ -392,7 +469,7 @@ pub fn move_players(
         transform.translation.x = route::clamp_actor_x(
             transform.translation.x,
             transform.translation.z,
-            GUNSLINGER_PLAYER.edge_radius,
+            units(GUNSLINGER_PLAYER.edge_radius),
         );
         if let Some(limit) = rear_limit {
             transform.translation.z = transform.translation.z.min(limit);
@@ -467,22 +544,24 @@ pub fn shoot(
             commands.spawn((
                 Projectile {
                     direction: shot_direction,
-                    speed: GUNSLINGER_WEAPON.projectile_speed,
-                    radius: GUNSLINGER_WEAPON.projectile_radius,
+                    speed: units(GUNSLINGER_WEAPON.projectile_speed),
+                    radius: units(GUNSLINGER_WEAPON.projectile_radius),
                     previous: shot_muzzle,
                     spent: false,
                     faction: Faction::Player,
+                    material: Material::Plasma,
+                    delivery: Delivery::Energy,
                     owner: entity,
                 },
                 Damage(GUNSLINGER_WEAPON.projectile_damage),
-                Lifetime(GUNSLINGER_WEAPON.projectile_lifetime),
+                Lifetime(units(GUNSLINGER_WEAPON.projectile_lifetime)),
                 Mesh3d(visuals.player_bullet_mesh.clone()),
                 MeshMaterial3d(visuals.bullet_material.clone()),
                 Transform::from_translation(shot_muzzle)
                     .with_rotation(Quat::from_rotation_y(
                         shot_direction.x.atan2(shot_direction.z),
                     ))
-                    .with_scale(Vec3::splat(GUNSLINGER_WEAPON.projectile_visual_scale)),
+                    .with_scale(Vec3::splat(GUNSLINGER_WEAPON.projectile_scale)),
             ));
         }
         audio::play_game(&mut commands, sounds.player_shot(), 0.34, 1.0);
@@ -688,9 +767,9 @@ mod tests {
                 .query::<(&Projectile, &Transform)>()
                 .iter(app.world())
                 .all(|(shot, transform)| {
-                    (shot.speed - 34.0 * 4.0 / 3.0).abs() < 0.001
-                        && (shot.radius - 0.17 * 2.0 / 3.0).abs() < 0.001
-                        && transform.scale == Vec3::splat(2.0 / 3.0)
+                    (shot.speed - units(GUNSLINGER_WEAPON.projectile_speed)).abs() < 0.001
+                        && (shot.radius - units(GUNSLINGER_WEAPON.projectile_radius)).abs() < 0.001
+                        && transform.scale == Vec3::splat(GUNSLINGER_WEAPON.projectile_scale)
                 })
         );
         assert!(

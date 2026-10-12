@@ -15,9 +15,13 @@ pub struct Visuals {
     pub bullet_mesh: Handle<Mesh>,
     pub player_bullet_mesh: Handle<Mesh>,
     pub zap_bolt_mesh: Handle<Mesh>,
+    pub grenade_mesh: Handle<Mesh>,
+    pub blast_ring_mesh: Handle<Mesh>,
     pub bullet_material: Handle<StandardMaterial>,
     pub enemy_bullet_material: Handle<StandardMaterial>,
     pub zap_bolt_material: Handle<StandardMaterial>,
+    pub grenade_material: Handle<StandardMaterial>,
+    pub blast_mark_material: Handle<StandardMaterial>,
     pub barricade_mesh: Handle<Mesh>,
     pub barricade_material: Handle<StandardMaterial>,
     pub rubble_mesh: Handle<Mesh>,
@@ -43,6 +47,8 @@ pub fn load(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>)
         bullet_mesh: meshes.add(Sphere::new(0.17)),
         player_bullet_mesh: meshes.add(player_bullet_mesh()),
         zap_bolt_mesh: meshes.add(Cuboid::new(1.0, 0.8, ZAP_BOLT_LENGTH)),
+        grenade_mesh: meshes.add(Sphere::new(0.16)),
+        blast_ring_mesh: meshes.add(Annulus::new(0.86, 1.0)),
         bullet_material: materials.add(StandardMaterial {
             base_color: Color::WHITE,
             alpha_mode: AlphaMode::Blend,
@@ -55,6 +61,18 @@ pub fn load(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>)
             base_color: Color::srgb(1.0, 0.84, 0.45),
             emissive: LinearRgba::new(6.0, 2.2, 0.35, 1.0),
             unlit: true,
+            ..default()
+        }),
+        grenade_material: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.18, 0.12, 0.1),
+            emissive: LinearRgba::new(1.6, 0.12, 0.04, 1.0),
+            ..default()
+        }),
+        blast_mark_material: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.9, 0.08, 0.04),
+            emissive: LinearRgba::new(4.0, 0.18, 0.05, 1.0),
+            unlit: true,
+            double_sided: true,
             ..default()
         }),
         barricade_mesh: meshes.add(Cuboid::new(5.4, 1.1, 1.0)),

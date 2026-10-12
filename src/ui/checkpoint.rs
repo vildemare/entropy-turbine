@@ -6,12 +6,12 @@ use bevy::time::Virtual;
 
 use crate::audio::{self, SoundBank};
 use crate::combat::{Health, Projectile};
-use crate::enemy::{Drift, EncounterDirector, Enemy, ZapBot};
+use crate::enemy::{Drift, EncounterDirector, Enemy, Grenadier, VolleyPiece, ZapBot};
 use crate::player::{
-    self, GunslingerWeapon, PLAYER_Y, Player, PlayerProgression, PlayerStats, reload_wait_ms_for,
+    self, GUNSLINGER_PLAYER, GUNSLINGER_WEAPON, GunslingerWeapon, PLAYER_Y, Player,
+    PlayerProgression, PlayerStats, reload_wait_ms_for,
 };
 use crate::session::{Phase, Session};
-use crate::tuning::{GUNSLINGER_PLAYER, GUNSLINGER_WEAPON};
 use crate::ui::UiFonts;
 use crate::world::camera::{CAMERA_BACK_OFFSET, FollowCamera};
 use crate::world::route;
@@ -253,6 +253,8 @@ pub fn cross_checkpoint(
     players: Query<&Transform, With<Player>>,
     enemies: Query<Entity, With<Enemy>>,
     zaps: Query<Entity, With<ZapBot>>,
+    grenadiers: Query<Entity, With<Grenadier>>,
+    volleys: Query<Entity, With<VolleyPiece>>,
     bullets: Query<Entity, With<Projectile>>,
 ) {
     if session.phase != Phase::Playing {
@@ -262,7 +264,13 @@ pub fn cross_checkpoint(
         return;
     };
     if players.iter().any(|player| player.translation.z <= z) {
-        for entity in enemies.iter().chain(zaps.iter()).chain(bullets.iter()) {
+        for entity in enemies
+            .iter()
+            .chain(zaps.iter())
+            .chain(grenadiers.iter())
+            .chain(volleys.iter())
+            .chain(bullets.iter())
+        {
             commands.entity(entity).despawn();
         }
         session.phase = Phase::Checkpoint;

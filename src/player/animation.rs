@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 
+use super::GUNSLINGER_PLAYER;
 use crate::player::{self, GunslingerWeapon, Player, PlayerIntent};
 use crate::session::{Phase, Session};
-use crate::tuning::GUNSLINGER_PLAYER;
 
 const MODEL_PATH: &str = "models/toon_soldier.gltf";
 

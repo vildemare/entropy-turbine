@@ -9,3 +9,9 @@ An enemy holds fire when a friendly unit or cover blocks the line to its target.
 Straight shots stop on barricades, rubble, and the side boulders. The [Steamist](players/steamist.md)'s canister is the exception to plan for: the flight passes over cover and does not strike actors, and the burst at the landing cross is what damages. The [Gunslinger](players/gunslinger.md)'s plasma and enemy gunfire stay direct. The [Mage](players/mage.md)'s fire does not block shots either; it threatens bodies that stand in it.
 
 Keep collision simple: swept projectiles against round actor footprints and box-shaped cover, plus lightweight separation between enemies. Realistic rigid-body physics is unnecessary for this game.
+
+A round carries its material, its delivery, and its damage. The body it meets applies that through its own abilities, in order, so hit points, a flat reduction, or an energy shield each handle their part. An enemy shot that meets another enemy stops there. Cover and the side boulders stop the round and play the impact. When hit points reach zero, the body reports that it has died.
+
+A flat reduction and a live shield each announce the hit they take, and that announcement plays its own short sound. A body with its shield up wears a faint blue shimmer. The shimmer hides while the shield is down and returns with the pool.
+
+A grenade blast is its own hit. Damage is full at the center of the circle and nothing at the rim, and every body in that circle handles the hit through its abilities. A gunshot between allies still stops short of hit points. The blast does not.

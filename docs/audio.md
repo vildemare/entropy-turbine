@@ -12,4 +12,8 @@ The game loads those WAV paths. Bevy's `file_watcher` feature reloads a file whe
 
 A zap-bot's charge is one rising whine, `zap_charge.wav`, about a second and a half long. It plays when a player enters the jolt's reach. The pitch climbs a fifth across that clip, and the game plays it at normal speed. The zap itself is a short crack, `zap.wav`, played when the jolt leaves the prongs.
 
+A grenade volley leaves the launcher with a short cough, `grenade_lob.wav`. Each landing is a low pop, `grenade_blast.wav`.
+
+A hit on armor is a short dry plate ring, `armor_hit.wav`. A hit on a live energy shield is a thin rising glass tone, `shield_hit.wav`. If damage still reaches the body, the body-hit sound follows in the same moment. A collapsed shield is silent and the body hit plays on its own.
+
 The Gunslinger's plasma thump is the player weapon in the build. The Mage's cast and the Steamist's charge and burst need their own short cues when those weapons exist: a fuel ignition for the patch, a rising pressure tick while the Steamist holds, and a steam crack when the canister lands. Those cues are not recorded yet. They should stay as short as the plasma thump so a dense fight can still be read.

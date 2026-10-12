@@ -5,8 +5,8 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 use bevy::prelude::*;
 use bevy::text::{FontSize, FontSource};
 
+use super::GUNSLINGER_WEAPON;
 use crate::player::{GunslingerWeapon, LocalPlayer};
-use crate::tuning::GUNSLINGER_WEAPON;
 use crate::ui::UiFonts;
 
 const DRUM_CENTER: f32 = 70.0;

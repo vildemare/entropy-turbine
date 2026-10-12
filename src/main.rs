@@ -1,15 +1,18 @@
 mod session;
-mod tuning;
+mod units;
 
+mod ability;
 mod combat;
 mod enemy;
 mod player;
+mod shield;
 mod world;
 
 mod audio;
 mod startup;
 mod ui;
 
+use bevy::pbr::MaterialPlugin;
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions};
 use bevy::{app::AnimationSystems, transform::TransformSystems};
@@ -31,7 +34,10 @@ fn main() {
         }))
         .init_resource::<session::Session>()
         .init_resource::<enemy::EncounterDirector>()
-        .add_systems(Startup, startup::setup)
+        .add_message::<ability::Struck>()
+        .add_message::<ability::Notice>()
+        .add_plugins(MaterialPlugin::<shield::ShieldMaterial>::default())
+        .add_systems(Startup, (startup::setup, shield::setup))
         .add_systems(
             Update,
             (
@@ -60,6 +66,7 @@ fn main() {
                 enemy::move_enemies,
                 enemy::separate_enemies,
                 enemy::drive_zap_bots,
+                enemy::walk_grenadiers,
             )
                 .chain()
                 .after(ui::cursor::move_captured_pointer),
@@ -70,9 +77,14 @@ fn main() {
                 enemy::cleanup_behind_camera,
                 enemy::shoot_enemies,
                 enemy::spawn_reinforcements,
+                ability::recover_shields,
+                shield::sync_shimmer,
                 combat::advance_hit_cooldowns,
                 combat::move_projectiles,
+                enemy::fly_grenades,
                 combat::resolve_hits,
+                combat::deliver_hits,
+                combat::present_notices,
                 combat::collect_orbs,
                 combat::expire_projectiles,
                 world::route::follow_route,

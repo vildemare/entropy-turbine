@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use bevy::{asset::RenderAssetUsages, render::render_resource::PrimitiveTopology};
 
+use crate::ability::Abilities;
 use crate::player::{LocalPlayer, Player};
 
 pub const ROAD_HALF_WIDTH: f32 = 13.0;
@@ -147,6 +148,7 @@ pub fn setup(
                 .with_scale(scale),
                 TerrainVisual,
                 Boulder(index),
+                Abilities::solid(),
             ));
         }
     }

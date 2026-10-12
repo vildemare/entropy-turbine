@@ -61,6 +61,20 @@
             duration_secs: 0.24,
         ),
         (
+            id: "armor_hit",
+            file: "armor_hit.wav",
+            origin: synthesized,
+            definition: "4b2be9e4bf05a8e5d47682d4ab5d1b1e9457c1b9ab53748299320faf3767cb00",
+            duration_secs: 0.18,
+        ),
+        (
+            id: "shield_hit",
+            file: "shield_hit.wav",
+            origin: synthesized,
+            definition: "4579e7e50e06f661bd609c7a7e698a290aca08dfc53e3f32120d819ff7cc0c94",
+            duration_secs: 0.2,
+        ),
+        (
             id: "player_hurt",
             file: "player_hurt.wav",
             origin: synthesized,
@@ -80,6 +94,20 @@
             origin: synthesized,
             definition: "ea571ee07559b236a207938ba4fc51b2986c97ef78de9492fdb1373f9328c58c",
             duration_secs: 0.16,
+        ),
+        (
+            id: "grenade_lob",
+            file: "grenade_lob.wav",
+            origin: synthesized,
+            definition: "21672a2764629652b513d157113516712ec43baa8d1c5321b91ead0f9ef6f39f",
+            duration_secs: 0.22,
+        ),
+        (
+            id: "grenade_blast",
+            file: "grenade_blast.wav",
+            origin: synthesized,
+            definition: "92f0b58a14ba65cded5c56fed41d8d6d46ad681273ffed1bead28fc21df2f813",
+            duration_secs: 0.24,
         ),
         (
             id: "death",

@@ -18,9 +18,13 @@ pub fn exported() -> Vec<ExportItem> {
         item("enemy_shot_3", enemy_shot(1.12, 6)),
         item("impact", impact()),
         item("enemy_hit", enemy_hit()),
+        item("armor_hit", armor_hit()),
+        item("shield_hit", shield_hit()),
         item("player_hurt", player_hurt()),
         item("zap_charge", zap_charge()),
         item("zap", zap()),
+        item("grenade_lob", grenade_lob()),
+        item("grenade_blast", grenade_blast()),
         item("death", death()),
         item("menu_click", menu_click()),
         item("ambience", ambience()),
@@ -290,6 +294,72 @@ fn enemy_hit() -> Sound {
         )
 }
 
+fn armor_hit() -> Sound {
+    // A short dry plate ring, higher than a body hit.
+    Sound::duration_secs(0.18)
+        .layer(
+            Oscillator::triangle(1680.0)
+                .sweep_to(720.0)
+                .duration(0.14)
+                .gain(0.22)
+                .envelope(
+                    Envelope::new()
+                        .attack(0.0)
+                        .decay(0.10)
+                        .sustain(0.0)
+                        .release(0.04),
+                ),
+        )
+        .layer(
+            Oscillator::sine(2460.0)
+                .duration(0.06)
+                .gain(0.10)
+                .envelope(Envelope::fast_decay()),
+        )
+        .layer(
+            Noise::white()
+                .seed(41)
+                .duration(0.02)
+                .high_pass(1800.0)
+                .gain(0.16)
+                .envelope(Envelope::fast_decay()),
+        )
+}
+
+fn shield_hit() -> Sound {
+    // A thin rising glass tone, so a shield reads apart from plate and flesh.
+    Sound::duration_secs(0.20)
+        .layer(
+            Oscillator::sine(880.0)
+                .sweep_to(1320.0)
+                .duration(0.16)
+                .gain(0.22)
+                .envelope(
+                    Envelope::new()
+                        .attack(0.004)
+                        .decay(0.12)
+                        .sustain(0.0)
+                        .release(0.04),
+                ),
+        )
+        .layer(
+            Oscillator::sine(1760.0)
+                .start_at(0.01)
+                .duration(0.10)
+                .gain(0.08)
+                .envelope(Envelope::fast_decay()),
+        )
+        .layer(
+            Noise::white()
+                .seed(47)
+                .duration(0.05)
+                .high_pass(2400.0)
+                .low_pass(7000.0)
+                .gain(0.08)
+                .envelope(Envelope::fast_decay()),
+        )
+}
+
 fn player_hurt() -> Sound {
     Sound::duration_secs(0.42)
         .layer(
@@ -379,6 +449,58 @@ fn zap() -> Sound {
                 .high_pass(1400.0)
                 .gain(0.18)
                 .envelope(Envelope::fast_decay()),
+        )
+}
+
+fn grenade_lob() -> Sound {
+    // A short cough as the four grenades leave together.
+    Sound::duration_secs(0.22)
+        .layer(
+            Noise::white()
+                .seed(53)
+                .duration(0.06)
+                .low_pass(900.0)
+                .gain(0.32)
+                .envelope(Envelope::fast_decay()),
+        )
+        .layer(
+            Oscillator::sine(180.0)
+                .sweep_to(420.0)
+                .duration(0.16)
+                .gain(0.16)
+                .envelope(
+                    Envelope::new()
+                        .attack(0.01)
+                        .decay(0.12)
+                        .sustain(0.0)
+                        .release(0.03),
+                ),
+        )
+}
+
+fn grenade_blast() -> Sound {
+    // A low pop at the mark, quiet enough that four can land together.
+    Sound::duration_secs(0.24)
+        .layer(
+            Noise::white()
+                .seed(59)
+                .duration(0.08)
+                .low_pass(700.0)
+                .gain(0.34)
+                .envelope(Envelope::fast_decay()),
+        )
+        .layer(
+            Oscillator::sine(90.0)
+                .sweep_to(48.0)
+                .duration(0.18)
+                .gain(0.28)
+                .envelope(
+                    Envelope::new()
+                        .attack(0.0)
+                        .decay(0.14)
+                        .sustain(0.0)
+                        .release(0.04),
+                ),
         )
 }
 

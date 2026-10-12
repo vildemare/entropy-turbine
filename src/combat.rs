@@ -1,29 +1,39 @@
 //! Projectiles, hits, and the point orbs left by defeated enemies.
+//!
+//! [`resolve_hits`] reports the nearest body a round met. [`deliver_hits`]
+//! walks that body's abilities. [`present_notices`] carries out what those
+//! abilities asked for.
 
 use bevy::prelude::*;
 
+use crate::ability::{self, Notice, Struck};
 use crate::audio::{self, SoundBank};
-use crate::enemy::{Cover, Drift, Enemy, EnemyReward, ZapBot};
+use crate::enemy::{Cover, Drift, Enemy, EnemyReward};
 use crate::player::Player;
 use crate::session::{Phase, Session};
-use crate::tuning::GUNSLINGER_PLAYER;
 use crate::world::route::{self, Boulder};
 use crate::world::visuals::Visuals;
 
-#[derive(Component)]
-pub struct Health(pub u32);
+pub use crate::ability::{
+    Abilities, Ability, Delivery, EnergyShield, Faction, Health, HitCooldown, Material,
+};
+
+/// The circle a projectile tests.
+///
+/// Machines set `swell`, so the round's own radius is added. The player's
+/// circle is already the full reach.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct HitCircle {
+    pub radius: f32,
+    pub faction: Faction,
+    pub swell: bool,
+}
 
 #[derive(Component)]
 pub struct Damage(pub u32);
 
 #[derive(Component)]
 pub struct Lifetime(pub f32);
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Faction {
-    Player,
-    Enemy,
-}
 
 #[derive(Component)]
 pub struct Projectile {
@@ -33,11 +43,10 @@ pub struct Projectile {
     pub previous: Vec3,
     pub spent: bool,
     pub faction: Faction,
+    pub material: Material,
+    pub delivery: Delivery,
     pub owner: Entity,
 }
-
-#[derive(Component, Default)]
-pub struct HitCooldown(pub f32);
 
 #[derive(Component)]
 pub struct PointOrb(pub u32);
@@ -101,87 +110,17 @@ pub fn move_projectiles(
     }
 }
 
-#[derive(Clone, Copy)]
-enum Hit {
-    Cover,
-    Boulder,
-    Enemy(Entity),
-    Player(Entity),
-    Friendly,
-}
-
-fn apply_enemy_damage(
-    commands: &mut Commands,
-    sounds: &SoundBank,
-    visuals: &Visuals,
-    session: &mut Session,
-    damage: u32,
-    position: Vec3,
-    health: &mut Health,
-    reward: Option<&mut EnemyReward>,
-) -> bool {
-    if health.0 == 0 {
-        return false;
-    }
-    health.0 = health.0.saturating_sub(damage);
-    audio::play_game(commands, &sounds.enemy_hit, 0.20, 1.0);
-    if health.0 > 0 {
-        return false;
-    }
-    audio::play_game(commands, &sounds.death, 0.18, 1.3);
-    if let Some(reward) = reward {
-        let points = reward.points();
-        commands.spawn((
-            PointOrb(points),
-            Mesh3d(visuals.orb_mesh.clone()),
-            MeshMaterial3d(visuals.orb_material.clone()),
-            Transform::from_xyz(position.x, 0.35, position.z),
-        ));
-    }
-    session.kills += 1;
-    true
-}
-
 pub fn resolve_hits(
-    mut session: ResMut<Session>,
-    sounds: Res<SoundBank>,
-    visuals: Res<Visuals>,
-    mut commands: Commands,
+    session: Res<Session>,
+    mut strikes: MessageWriter<Struck>,
     mut bullets: Query<(&Transform, &mut Projectile, &Damage)>,
-    covers: Query<(&Transform, &Cover)>,
-    boulders: Query<&Transform, With<Boulder>>,
-    mut enemies: Query<
-        (
-            Entity,
-            &Transform,
-            &Enemy,
-            &mut Health,
-            Option<&mut EnemyReward>,
-        ),
-        (With<Enemy>, Without<Player>),
-    >,
-    mut zap_bots: Query<
-        (
-            Entity,
-            &Transform,
-            &ZapBot,
-            &mut Health,
-            Option<&mut EnemyReward>,
-        ),
-        (With<ZapBot>, Without<Enemy>, Without<Player>),
-    >,
-    mut players: Query<
-        (Entity, &Transform, &mut Health, &mut HitCooldown),
-        (With<Player>, Without<Enemy>),
-    >,
+    covers: Query<(Entity, &Transform, &Cover)>,
+    boulders: Query<(Entity, &Transform), With<Boulder>>,
+    bodies: Query<(Entity, &Transform, &HitCircle, &Health), Without<Projectile>>,
 ) {
     if session.phase != Phase::Playing {
         return;
     }
-    let zap_targets: Vec<(Entity, Vec3, f32)> = zap_bots
-        .iter()
-        .map(|(entity, transform, bot, _, _)| (entity, transform.translation, bot.radius))
-        .collect();
     for (transform, mut bullet, damage) in &mut bullets {
         if bullet.spent {
             continue;
@@ -189,138 +128,144 @@ pub fn resolve_hits(
         let start = bullet.previous;
         let end = transform.translation;
         let mut nearest = 1.01;
-        let mut hit = None;
-        for (cover_transform, cover) in &covers {
+        let mut target = None;
+        for (entity, cover_transform, cover) in &covers {
             if let Some(t) = segment_cover_t(start, end, cover_transform.translation, cover) {
                 if t < nearest {
                     nearest = t;
-                    hit = Some(Hit::Cover);
+                    target = Some(entity);
                 }
             }
         }
-        for boulder in &boulders {
+        for (entity, boulder) in &boulders {
             if let Some(t) = segment_boulder_t(start, end, boulder) {
                 if t < nearest {
                     nearest = t;
-                    hit = Some(Hit::Boulder);
+                    target = Some(entity);
                 }
             }
         }
-        for (entity, enemy_transform, enemy, health, _) in &mut enemies {
-            if health.0 == 0 || (bullet.faction == Faction::Enemy && entity == bullet.owner) {
+        for (entity, body_transform, circle, health) in &bodies {
+            if health.0 == 0 || entity == bullet.owner {
                 continue;
             }
-            if let Some(t) = segment_circle_t(
-                start,
-                end,
-                enemy_transform.translation,
-                enemy.radius + bullet.radius,
-            ) {
-                if t < nearest {
-                    nearest = t;
-                    hit = Some(if bullet.faction == Faction::Player {
-                        Hit::Enemy(entity)
-                    } else {
-                        Hit::Friendly
-                    });
-                }
-            }
-        }
-        for (entity, zap_position, radius) in &zap_targets {
-            if bullet.faction == Faction::Enemy && *entity == bullet.owner {
+            // A player's own rounds are not tested against the player.
+            // Allied rounds still meet other machines.
+            if bullet.faction != Faction::Enemy && circle.faction != Faction::Enemy {
                 continue;
             }
-            if let Some(t) = segment_circle_t(start, end, *zap_position, radius + bullet.radius) {
+            let reach = if circle.swell {
+                circle.radius + bullet.radius
+            } else {
+                circle.radius
+            };
+            if let Some(t) = segment_circle_t(start, end, body_transform.translation, reach) {
                 if t < nearest {
                     nearest = t;
-                    hit = Some(if bullet.faction == Faction::Player {
-                        Hit::Enemy(*entity)
-                    } else {
-                        Hit::Friendly
-                    });
+                    target = Some(entity);
                 }
             }
         }
-        if bullet.faction == Faction::Enemy {
-            for (entity, player_transform, health, _) in &mut players {
-                if health.0 == 0 {
-                    continue;
-                }
-                if let Some(t) = segment_circle_t(
-                    start,
-                    end,
-                    player_transform.translation,
-                    GUNSLINGER_PLAYER.hit_radius,
-                ) {
-                    if t < nearest {
-                        nearest = t;
-                        hit = Some(Hit::Player(entity));
-                    }
-                }
-            }
-        }
-        let Some(hit) = hit else { continue };
+        let Some(target) = target else {
+            continue;
+        };
         bullet.spent = true;
-        match hit {
-            Hit::Enemy(entity) => {
-                let killed = if let Ok((_, enemy_transform, _, mut health, mut reward)) =
-                    enemies.get_mut(entity)
-                {
-                    apply_enemy_damage(
-                        &mut commands,
-                        &sounds,
-                        &visuals,
-                        &mut session,
-                        damage.0,
-                        enemy_transform.translation,
-                        &mut health,
-                        reward.as_deref_mut(),
-                    )
-                } else if let Ok((_, zap_transform, _, mut health, mut reward)) =
-                    zap_bots.get_mut(entity)
-                {
-                    apply_enemy_damage(
-                        &mut commands,
-                        &sounds,
-                        &visuals,
-                        &mut session,
-                        damage.0,
-                        zap_transform.translation,
-                        &mut health,
-                        reward.as_deref_mut(),
-                    )
-                } else {
-                    false
-                };
-                if killed {
-                    commands.entity(entity).despawn();
+        strikes.write(Struck {
+            target,
+            source: bullet.owner,
+            damage: damage.0,
+            material: bullet.material,
+            delivery: bullet.delivery,
+            faction: bullet.faction,
+        });
+    }
+}
+
+pub fn deliver_hits(
+    mut strikes: MessageReader<Struck>,
+    mut notices: MessageWriter<Notice>,
+    mut bodies: Query<(
+        &Abilities,
+        Option<&mut Health>,
+        Option<&mut HitCooldown>,
+        Option<&mut EnergyShield>,
+        &Transform,
+    )>,
+) {
+    for strike in strikes.read().copied() {
+        let Ok((abilities, mut health, mut grace, mut shield, transform)) =
+            bodies.get_mut(strike.target)
+        else {
+            continue;
+        };
+        let mut batch = Vec::new();
+        ability::walk(
+            strike,
+            transform.translation,
+            &abilities.0,
+            &mut health,
+            &mut grace,
+            &mut shield,
+            &mut batch,
+        );
+        for notice in batch {
+            notices.write(notice);
+        }
+    }
+}
+
+pub fn present_notices(
+    mut notices: MessageReader<Notice>,
+    mut commands: Commands,
+    mut session: ResMut<Session>,
+    sounds: Res<SoundBank>,
+    visuals: Res<Visuals>,
+    mut rewards: Query<&mut EnemyReward>,
+) {
+    for notice in notices.read().copied() {
+        match notice {
+            Notice::Hurt { player: true, by } => {
+                if let Ok(mut reward) = rewards.get_mut(by) {
+                    reward.hit_player = true;
                 }
+                audio::play_game(&mut commands, &sounds.player_hurt, 0.35, 1.0);
             }
-            Hit::Player(entity) => {
-                if let Ok((_, _, mut health, mut cooldown)) = players.get_mut(entity) {
-                    if cooldown.0 <= 0.0 {
-                        health.0 = health.0.saturating_sub(damage.0);
-                        if let Ok((_, _, _, _, Some(mut reward))) = enemies.get_mut(bullet.owner) {
-                            reward.hit_player = true;
-                        } else if let Ok((_, _, _, _, Some(mut reward))) =
-                            zap_bots.get_mut(bullet.owner)
-                        {
-                            reward.hit_player = true;
-                        }
-                        audio::play_game(&mut commands, &sounds.player_hurt, 0.35, 1.0);
-                        cooldown.0 = 0.35;
-                        if health.0 == 0 {
-                            audio::play_game(&mut commands, &sounds.death, 0.47, 0.85);
-                            session.phase = Phase::PlayerDead;
-                        }
-                    }
+            Notice::Hurt { player: false, .. } => {
+                audio::play_game(&mut commands, &sounds.enemy_hit, 0.20, 1.0);
+            }
+            Notice::Died { player: true, .. } => {
+                audio::play_game(&mut commands, &sounds.death, 0.47, 0.85);
+                session.phase = Phase::PlayerDead;
+            }
+            Notice::Died {
+                player: false,
+                target,
+                at,
+            } => {
+                audio::play_game(&mut commands, &sounds.death, 0.18, 1.3);
+                if let Ok(reward) = rewards.get(target) {
+                    let points = reward.points();
+                    commands.spawn((
+                        PointOrb(points),
+                        Mesh3d(visuals.orb_mesh.clone()),
+                        MeshMaterial3d(visuals.orb_material.clone()),
+                        Transform::from_xyz(at.x, 0.35, at.z),
+                    ));
                 }
+                session.kills += 1;
+                commands.entity(target).despawn();
             }
-            Hit::Cover | Hit::Boulder => {
+            Notice::Impact => {
                 audio::play_game(&mut commands, &sounds.impact, 0.13, 1.0);
             }
-            Hit::Friendly => {
+            Notice::FriendlyStop => {
                 audio::play_game(&mut commands, &sounds.enemy_hit, 0.09, 1.0);
+            }
+            Notice::Armor => {
+                audio::play_game(&mut commands, &sounds.armor_hit, 0.24, 1.0);
+            }
+            Notice::Shield => {
+                audio::play_game(&mut commands, &sounds.shield_hit, 0.22, 1.0);
             }
         }
     }
@@ -437,40 +382,83 @@ pub fn expire_projectiles(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::enemy::{AttackPhase, EnemyState, Tactic};
+    use crate::ability::HIT_GRACE;
+    use crate::enemy::{AttackPhase, EnemyKind, EnemyReward, EnemyState, Tactic};
+
+    fn prepare(app: &mut App) {
+        app.insert_resource(Session::default())
+            .insert_resource(Visuals::default())
+            .insert_resource(SoundBank::default())
+            .add_message::<Struck>()
+            .add_message::<Notice>()
+            .add_systems(
+                Update,
+                (resolve_hits, deliver_hits, present_notices).chain(),
+            );
+    }
+
+    fn round(faction: Faction, material: Material, delivery: Delivery) -> Projectile {
+        Projectile {
+            direction: Vec3::Z,
+            speed: 16.0,
+            radius: 0.17,
+            previous: Vec3::ZERO,
+            spent: false,
+            faction,
+            material,
+            delivery,
+            owner: Entity::PLACEHOLDER,
+        }
+    }
 
     #[test]
     fn small_damage_reduces_health_without_killing_player() {
         let mut app = App::new();
-        app.insert_resource(Session::default())
-            .insert_resource(Visuals::default())
-            .insert_resource(SoundBank::default())
-            .add_systems(Update, resolve_hits);
+        prepare(&mut app);
         let player = app
             .world_mut()
             .spawn((
                 Player,
+                Abilities::player(),
                 Health(1000),
                 HitCooldown::default(),
+                player_circle(),
                 Transform::from_xyz(0.0, 0.75, 0.0),
             ))
             .id();
-        app.world_mut().spawn((
-            Projectile {
-                direction: Vec3::Z,
-                speed: 16.0,
-                radius: 0.17,
-                previous: Vec3::new(0.0, 0.75, -1.0),
-                spent: false,
-                faction: Faction::Enemy,
-                owner: Entity::PLACEHOLDER,
-            },
-            Damage(100),
-            Transform::from_xyz(0.0, 0.75, 0.0),
-        ));
+        let mut shot = round(Faction::Enemy, Material::Metal, Delivery::Kinetic);
+        shot.previous = Vec3::new(0.0, 0.75, -1.0);
+        app.world_mut()
+            .spawn((shot, Damage(100), Transform::from_xyz(0.0, 0.75, 0.0)));
         app.update();
         assert_eq!(app.world().get::<Health>(player).unwrap().0, 900);
+        assert_eq!(app.world().get::<HitCooldown>(player).unwrap().0, HIT_GRACE);
         assert_eq!(app.world().resource::<Session>().phase, Phase::Playing);
+    }
+
+    #[test]
+    fn a_second_round_in_the_same_moment_meets_the_players_grace() {
+        let mut app = App::new();
+        prepare(&mut app);
+        let player = app
+            .world_mut()
+            .spawn((
+                Player,
+                Abilities::player(),
+                Health(1000),
+                HitCooldown::default(),
+                player_circle(),
+                Transform::from_xyz(0.0, 0.75, 0.0),
+            ))
+            .id();
+        for _ in 0..2 {
+            let mut shot = round(Faction::Enemy, Material::Metal, Delivery::Kinetic);
+            shot.previous = Vec3::new(0.0, 0.75, -1.0);
+            app.world_mut()
+                .spawn((shot, Damage(100), Transform::from_xyz(0.0, 0.75, 0.0)));
+        }
+        app.update();
+        assert_eq!(app.world().get::<Health>(player).unwrap().0, 900);
     }
 
     #[test]
@@ -490,6 +478,22 @@ mod tests {
         assert!(app.world().get_entity(orb).is_err());
         app.update();
         assert_eq!(app.world().resource::<Session>().points, 4);
+    }
+
+    fn player_circle() -> HitCircle {
+        HitCircle {
+            radius: crate::units::units(crate::player::GUNSLINGER_PLAYER.hit_radius),
+            faction: Faction::Player,
+            swell: false,
+        }
+    }
+
+    fn body_circle() -> HitCircle {
+        HitCircle {
+            radius: 0.56,
+            faction: Faction::Enemy,
+            swell: true,
+        }
     }
 
     fn enemy() -> Enemy {
@@ -517,42 +521,44 @@ mod tests {
     #[test]
     fn enemy_shot_is_absorbed_by_an_ally_in_front_of_the_player() {
         let mut app = App::new();
-        app.insert_resource(Session::default())
-            .insert_resource(Visuals::default())
-            .insert_resource(SoundBank::default())
-            .add_systems(Update, resolve_hits);
+        prepare(&mut app);
         let shooter = app
             .world_mut()
-            .spawn((enemy(), Health(2), Transform::from_xyz(0.0, 0.5, -5.0)))
+            .spawn((
+                enemy(),
+                Abilities::enemy(),
+                Health(2),
+                body_circle(),
+                Transform::from_xyz(0.0, 0.5, -5.0),
+            ))
             .id();
         let ally = app
             .world_mut()
-            .spawn((enemy(), Health(2), Transform::from_xyz(0.0, 0.5, -2.0)))
+            .spawn((
+                enemy(),
+                Abilities::enemy(),
+                Health(2),
+                body_circle(),
+                Transform::from_xyz(0.0, 0.5, -2.0),
+            ))
             .id();
         let player = app
             .world_mut()
             .spawn((
                 Player,
+                Abilities::player(),
                 Health(5),
                 HitCooldown::default(),
+                player_circle(),
                 Transform::from_xyz(0.0, 0.75, 0.0),
             ))
             .id();
+        let mut shot = round(Faction::Enemy, Material::Metal, Delivery::Kinetic);
+        shot.previous = Vec3::new(0.0, 0.75, -4.0);
+        shot.owner = shooter;
         let shot = app
             .world_mut()
-            .spawn((
-                Projectile {
-                    direction: Vec3::Z,
-                    speed: 16.0,
-                    radius: 0.17,
-                    previous: Vec3::new(0.0, 0.75, -4.0),
-                    spent: false,
-                    faction: Faction::Enemy,
-                    owner: shooter,
-                },
-                Damage(1),
-                Transform::from_xyz(0.0, 0.75, 0.0),
-            ))
+            .spawn((shot, Damage(1), Transform::from_xyz(0.0, 0.75, 0.0)))
             .id();
         app.update();
         assert!(app.world().get::<Projectile>(shot).unwrap().spent);
@@ -563,15 +569,19 @@ mod tests {
     #[test]
     fn barricade_stops_a_player_shot_before_it_reaches_an_enemy() {
         let mut app = App::new();
-        app.insert_resource(Session::default())
-            .insert_resource(Visuals::default())
-            .insert_resource(SoundBank::default())
-            .add_systems(Update, resolve_hits);
+        prepare(&mut app);
         let enemy = app
             .world_mut()
-            .spawn((enemy(), Health(2), Transform::from_xyz(0.0, 0.5, -4.0)))
+            .spawn((
+                enemy(),
+                Abilities::enemy(),
+                Health(2),
+                body_circle(),
+                Transform::from_xyz(0.0, 0.5, -4.0),
+            ))
             .id();
         app.world_mut().spawn((
+            Abilities::solid(),
             Cover {
                 half_width: 2.7,
                 half_depth: 0.5,
@@ -579,21 +589,13 @@ mod tests {
             },
             Transform::from_xyz(0.0, 0.55, -2.0),
         ));
+        let mut shot = round(Faction::Player, Material::Plasma, Delivery::Energy);
+        shot.direction = Vec3::NEG_Z;
+        shot.speed = 34.0;
+        shot.previous = Vec3::new(0.0, 0.75, 0.0);
         let shot = app
             .world_mut()
-            .spawn((
-                Projectile {
-                    direction: Vec3::NEG_Z,
-                    speed: 34.0,
-                    radius: 0.17,
-                    previous: Vec3::new(0.0, 0.75, 0.0),
-                    spent: false,
-                    faction: Faction::Player,
-                    owner: Entity::PLACEHOLDER,
-                },
-                Damage(1),
-                Transform::from_xyz(0.0, 0.75, -5.0),
-            ))
+            .spawn((shot, Damage(1), Transform::from_xyz(0.0, 0.75, -5.0)))
             .id();
         app.update();
         assert!(app.world().get::<Projectile>(shot).unwrap().spent);
@@ -603,33 +605,82 @@ mod tests {
     #[test]
     fn side_boulder_absorbs_a_swept_shot() {
         let mut app = App::new();
-        app.insert_resource(Session::default())
-            .insert_resource(Visuals::default())
-            .insert_resource(SoundBank::default())
-            .add_systems(Update, resolve_hits);
+        prepare(&mut app);
         app.world_mut().spawn((
+            Abilities::solid(),
             Boulder(0),
             Transform::from_xyz(14.7, 0.7, 0.0)
                 .with_rotation(Quat::from_rotation_y(0.16))
                 .with_scale(Vec3::new(1.2, 1.0, 1.0)),
         ));
+        let mut shot = round(Faction::Player, Material::Plasma, Delivery::Energy);
+        shot.direction = Vec3::X;
+        shot.speed = 34.0;
+        shot.previous = Vec3::new(12.0, 0.75, 0.0);
         let shot = app
             .world_mut()
-            .spawn((
-                Projectile {
-                    direction: Vec3::X,
-                    speed: 34.0,
-                    radius: 0.17,
-                    previous: Vec3::new(12.0, 0.75, 0.0),
-                    spent: false,
-                    faction: Faction::Player,
-                    owner: Entity::PLACEHOLDER,
-                },
-                Damage(1),
-                Transform::from_xyz(17.0, 0.75, 0.0),
-            ))
+            .spawn((shot, Damage(1), Transform::from_xyz(17.0, 0.75, 0.0)))
             .id();
         app.update();
         assert!(app.world().get::<Projectile>(shot).unwrap().spent);
+    }
+
+    #[test]
+    fn a_guard_in_front_of_hit_points_keeps_part_of_the_round() {
+        let mut app = App::new();
+        prepare(&mut app);
+        let player = app
+            .world_mut()
+            .spawn((
+                Player,
+                Abilities(vec![Ability::ReduceDamage(40), Ability::PlayerLife]),
+                Health(1000),
+                player_circle(),
+                Transform::from_xyz(0.0, 0.75, 0.0),
+            ))
+            .id();
+        let mut shot = round(Faction::Enemy, Material::Metal, Delivery::Kinetic);
+        shot.previous = Vec3::new(0.0, 0.75, -1.0);
+        app.world_mut()
+            .spawn((shot, Damage(100), Transform::from_xyz(0.0, 0.75, 0.0)));
+        app.update();
+        assert_eq!(app.world().get::<Health>(player).unwrap().0, 940);
+    }
+
+    #[test]
+    fn one_killing_blow_counts_once_when_two_rounds_meet_the_body() {
+        let mut app = App::new();
+        prepare(&mut app);
+        let enemy = app
+            .world_mut()
+            .spawn((
+                enemy(),
+                Abilities::enemy(),
+                Health(2),
+                body_circle(),
+                EnemyReward {
+                    kind: EnemyKind::Scout,
+                    hit_player: false,
+                },
+                Transform::from_xyz(0.0, 0.5, -4.0),
+            ))
+            .id();
+        for _ in 0..2 {
+            let mut shot = round(Faction::Player, Material::Plasma, Delivery::Energy);
+            shot.direction = Vec3::NEG_Z;
+            shot.previous = Vec3::new(0.0, 0.5, 0.0);
+            app.world_mut()
+                .spawn((shot, Damage(2), Transform::from_xyz(0.0, 0.5, -6.0)));
+        }
+        app.update();
+        assert!(app.world().get_entity(enemy).is_err());
+        assert_eq!(app.world().resource::<Session>().kills, 1);
+        assert_eq!(
+            app.world_mut()
+                .query::<&PointOrb>()
+                .iter(app.world())
+                .count(),
+            1
+        );
     }
 }

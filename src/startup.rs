@@ -4,7 +4,7 @@ use bevy::prelude::*;
 
 use crate::audio;
 use crate::combat::{PointOrb, Projectile};
-use crate::enemy::{Cover, EncounterDirector, Enemy, ZapBot};
+use crate::enemy::{Cover, EncounterDirector, Enemy, Grenadier, VolleyPiece, ZapBot};
 use crate::player::animation::CharacterAsset;
 use crate::player::{self, PLAYER_Y, Player};
 use crate::session::{Phase, Session};
@@ -67,6 +67,8 @@ pub fn restart(
     players: Query<Entity, With<Player>>,
     enemies: Query<Entity, With<Enemy>>,
     zaps: Query<Entity, With<ZapBot>>,
+    grenadiers: Query<Entity, With<Grenadier>>,
+    volleys: Query<Entity, With<VolleyPiece>>,
     bullets: Query<Entity, With<Projectile>>,
     orbs: Query<Entity, With<PointOrb>>,
     covers: Query<Entity, With<Cover>>,
@@ -80,6 +82,8 @@ pub fn restart(
         .iter()
         .chain(enemies.iter())
         .chain(zaps.iter())
+        .chain(grenadiers.iter())
+        .chain(volleys.iter())
         .chain(bullets.iter())
         .chain(orbs.iter())
         .chain(covers.iter())
