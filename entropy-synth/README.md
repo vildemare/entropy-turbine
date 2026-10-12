@@ -26,6 +26,27 @@ cargo run -p entropy-synth -- export
 ),
 ```
 
-A frequency sweep moves exponentially from the starting pitch to `sweep_to`. A layer with no duration plays until the sound ends. A layer with no envelope stays at full level for its window.
+A frequency sweep moves exponentially from the starting pitch to `sweep_to`. A layer with no duration plays until the sound's content ends. A layer with no envelope stays at full level for its window.
+
+`fixed_duration` sets that content length. With no fixed duration, the sound runs until the latest layer end. `padding` adds silence after the content. `layer_named` gives a layer a name. Another layer can then use `after_start`, `before_start`, `after_end`, or `before_end` to place itself against that name. `append_layer` starts an unnamed layer when the previous layer ends, so the previous layer needs its own duration.
+
+```rust
+Sound::new()
+    .layer_named("hiss", Noise::white().duration(0.80).gain(0.2))
+    .layer_named(
+        "clunk",
+        Oscillator::sine(110.0)
+            .after_end("hiss", 0.05)
+            .duration(0.15)
+            .gain(0.5),
+    )
+    .layer_named(
+        "ring",
+        Oscillator::triangle(720.0)
+            .before_end("clunk", 0.03)
+            .duration(0.40)
+            .gain(0.1),
+    )
+```
 
 While the game is running under `cargo run`, Bevy's file watcher reloads a WAV after export replaces it. The next time that sound plays, it is the new file. Restart the game only after a code change, such as turning the watcher on.

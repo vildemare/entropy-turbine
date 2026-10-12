@@ -23,14 +23,30 @@ enum Source {
     },
 }
 
+/// Where a layer starts, before the sound has been scheduled.
+#[derive(Clone)]
+enum Timing {
+    At(f32),
+    AfterStart(String, f32),
+    BeforeStart(String, f32),
+    AfterEnd(String, f32),
+    BeforeEnd(String, f32),
+    /// The end of the previous layer. The first layer starts at 0.
+    AfterPrevious,
+}
+
 /// One oscillator or noise bed inside a [`Sound`].
 ///
 /// A layer with no [`duration`](Layer::duration) plays from its start until the
-/// sound ends. A layer with no envelope stays at full level for that window.
+/// sound's content ends. A layer with no envelope stays at full level for that
+/// window. [`after_end`](Layer::after_end) and the other anchors place this
+/// layer against a named layer. The anchor reads that layer's own duration, so
+/// the named layer needs [`duration`](Layer::duration).
 #[derive(Clone)]
 pub struct Layer {
+    name: Option<String>,
+    timing: Timing,
     source: Source,
-    start_at: f32,
     duration: Option<f32>,
     gain: f32,
     envelope: Option<Envelope>,
@@ -41,12 +57,13 @@ pub struct Layer {
 impl Layer {
     fn oscillator(wave: Wave, frequency: f32) -> Self {
         Self {
+            name: None,
+            timing: Timing::At(0.0),
             source: Source::Oscillator {
                 wave,
                 frequency,
                 sweep_to: None,
             },
-            start_at: 0.0,
             duration: None,
             gain: 1.0,
             envelope: None,
@@ -68,7 +85,31 @@ impl Layer {
     }
 
     pub fn start_at(mut self, seconds: f32) -> Self {
-        self.start_at = seconds;
+        self.timing = Timing::At(seconds);
+        self
+    }
+
+    /// Start this many seconds after the named layer starts.
+    pub fn after_start(mut self, layer: &str, seconds: f32) -> Self {
+        self.timing = Timing::AfterStart(layer.to_string(), seconds);
+        self
+    }
+
+    /// Start this many seconds before the named layer starts.
+    pub fn before_start(mut self, layer: &str, seconds: f32) -> Self {
+        self.timing = Timing::BeforeStart(layer.to_string(), seconds);
+        self
+    }
+
+    /// Start this many seconds after the named layer ends.
+    pub fn after_end(mut self, layer: &str, seconds: f32) -> Self {
+        self.timing = Timing::AfterEnd(layer.to_string(), seconds);
+        self
+    }
+
+    /// Start this many seconds before the named layer ends.
+    pub fn before_end(mut self, layer: &str, seconds: f32) -> Self {
+        self.timing = Timing::BeforeEnd(layer.to_string(), seconds);
         self
     }
 
@@ -100,7 +141,7 @@ impl Layer {
         self
     }
 
-    fn canonical(&self) -> String {
+    fn canonical(&self, start: f32) -> String {
         let source = match &self.source {
             Source::Oscillator {
                 wave,
@@ -127,7 +168,7 @@ impl Layer {
             .unwrap_or_else(|| "none".to_string());
         format!(
             "{source} start={} dur={duration} gain={} env={envelope} lp={} hp={}",
-            num(self.start_at),
+            num(start),
             num(self.gain),
             self.low_pass.map(num).unwrap_or_else(|| "none".to_string()),
             self.high_pass
@@ -158,8 +199,9 @@ pub struct Noise;
 impl Noise {
     pub fn white() -> Layer {
         Layer {
+            name: None,
+            timing: Timing::At(0.0),
             source: Source::Noise { seed: 1 },
-            start_at: 0.0,
             duration: None,
             gain: 1.0,
             envelope: None,
@@ -266,19 +308,51 @@ impl Default for Envelope {
     }
 }
 
-/// A mixed sound of fixed length.
+/// A mixed sound.
+///
+/// With no [`fixed_duration`](Sound::fixed_duration), the length is the latest
+/// layer end. [`padding`](Sound::padding) adds silence after that.
+/// [`duration_secs`](Sound::duration_secs) fixes the length from the start.
 #[derive(Clone)]
 pub struct Sound {
-    duration: f32,
+    fixed_duration: Option<f32>,
+    padding: f32,
     layers: Vec<Layer>,
 }
 
+struct Schedule {
+    /// Layer audio ends here. Padding stays silent after it.
+    content: f32,
+    total: f32,
+    layers: Vec<(f32, Layer)>,
+}
+
 impl Sound {
-    pub fn duration_secs(seconds: f32) -> Self {
+    pub fn new() -> Self {
         Self {
-            duration: seconds.max(0.0),
+            fixed_duration: None,
+            padding: 0.0,
             layers: Vec::new(),
         }
+    }
+
+    pub fn duration_secs(seconds: f32) -> Self {
+        Self::new().fixed_duration(seconds)
+    }
+
+    /// Keep the sound at this length, then add any [`padding`](Sound::padding).
+    ///
+    /// Layers are clipped to this length. A sound with no fixed duration runs
+    /// until the latest layer end instead.
+    pub fn fixed_duration(mut self, seconds: f32) -> Self {
+        self.fixed_duration = Some(seconds.max(0.0));
+        self
+    }
+
+    /// Silence added after the sound's content.
+    pub fn padding(mut self, seconds: f32) -> Self {
+        self.padding = seconds.max(0.0);
+        self
     }
 
     pub fn layer(mut self, layer: Layer) -> Self {
@@ -286,8 +360,34 @@ impl Sound {
         self
     }
 
+    /// Add a layer under `name`, so other layers can anchor to it.
+    pub fn layer_named(mut self, name: &str, mut layer: Layer) -> Self {
+        if name.is_empty() {
+            panic!("a layer name is empty");
+        }
+        if self
+            .layers
+            .iter()
+            .any(|existing| existing.name.as_deref() == Some(name))
+        {
+            panic!("sound already has a layer named {name}");
+        }
+        layer.name = Some(name.to_string());
+        self.layers.push(layer);
+        self
+    }
+
+    /// Add a layer that starts when the previous layer ends.
+    ///
+    /// The previous layer needs its own duration. The first layer starts at 0.
+    pub fn append_layer(mut self, mut layer: Layer) -> Self {
+        layer.timing = Timing::AfterPrevious;
+        self.layers.push(layer);
+        self
+    }
+
     pub fn duration(&self) -> f32 {
-        self.duration
+        self.schedule().total
     }
 
     /// Stable identity of this definition at `sample_rate`.
@@ -301,23 +401,181 @@ impl Sound {
     }
 
     pub fn render(&self, sample_rate: u32) -> Vec<f32> {
-        let count = sample_count(self.duration, sample_rate);
+        let schedule = self.schedule();
+        let count = sample_count(schedule.total, sample_rate);
         let mut mix = vec![0.0; count];
-        for layer in &self.layers {
-            render_layer(layer, sample_rate, self.duration, &mut mix);
+        for (start, layer) in &schedule.layers {
+            render_layer(layer, *start, sample_rate, schedule.content, &mut mix);
         }
         mix
     }
 
     fn canonical(&self, sample_rate: u32) -> String {
-        let mut lines = vec![format!(
+        let schedule = self.schedule();
+        let mut header = format!(
             "engine={ENGINE} rate={sample_rate} duration={}",
-            num(self.duration)
-        )];
-        for layer in &self.layers {
-            lines.push(layer.canonical());
+            num(schedule.total)
+        );
+        if self.padding > 0.0 {
+            header.push_str(&format!(" pad={}", num(self.padding)));
+        }
+        let mut lines = vec![header];
+        for (start, layer) in &schedule.layers {
+            lines.push(layer.canonical(*start));
         }
         lines.join("\n")
+    }
+
+    fn schedule(&self) -> Schedule {
+        let count = self.layers.len();
+        let mut starts = vec![None; count];
+        let mut ends = vec![None; count];
+        for _ in 0..count {
+            let mut advanced = false;
+            for index in 0..count {
+                if starts[index].is_some() {
+                    continue;
+                }
+                let Some(start) = self.anchor_start(index, &starts, &ends) else {
+                    continue;
+                };
+                starts[index] = Some(start);
+                if let Some(duration) = self.layers[index].duration {
+                    ends[index] = Some(start + duration.max(0.0));
+                }
+                advanced = true;
+            }
+            if !advanced {
+                break;
+            }
+        }
+        if starts.iter().any(Option::is_none) {
+            let waiting = (0..count)
+                .filter(|&index| starts[index].is_none())
+                .map(|index| self.anchor_label(index))
+                .collect::<Vec<_>>()
+                .join(", ");
+            panic!("layer timing is still waiting: {waiting}");
+        }
+
+        if self.fixed_duration.is_none() {
+            // Time zero stays put. A start before zero pulls every layer forward
+            // so that layer is still heard.
+            let earliest = starts.iter().flatten().copied().fold(0.0, f32::min);
+            if earliest < 0.0 {
+                let shift = -earliest;
+                for start in &mut starts {
+                    *start = Some(start.unwrap() + shift);
+                }
+                for end in &mut ends {
+                    if let Some(end) = end {
+                        *end += shift;
+                    }
+                }
+            }
+        } else {
+            for index in 0..count {
+                let start = starts[index].unwrap().max(0.0);
+                starts[index] = Some(start);
+                if let Some(duration) = self.layers[index].duration {
+                    ends[index] = Some(start + duration.max(0.0));
+                }
+            }
+        }
+
+        let content = self
+            .fixed_duration
+            .unwrap_or_else(|| ends.iter().flatten().copied().fold(0.0_f32, f32::max));
+        let layers = self
+            .layers
+            .iter()
+            .zip(starts)
+            .map(|(layer, start)| (start.unwrap(), layer.clone()))
+            .collect();
+        Schedule {
+            content,
+            total: content + self.padding.max(0.0),
+            layers,
+        }
+    }
+
+    fn anchor_start(
+        &self,
+        index: usize,
+        starts: &[Option<f32>],
+        ends: &[Option<f32>],
+    ) -> Option<f32> {
+        match &self.layers[index].timing {
+            Timing::At(seconds) => Some(*seconds),
+            Timing::AfterStart(name, seconds) => {
+                self.named_start(name, starts).map(|start| start + seconds)
+            }
+            Timing::BeforeStart(name, seconds) => {
+                self.named_start(name, starts).map(|start| start - seconds)
+            }
+            Timing::AfterEnd(name, seconds) => self.named_end(name, ends).map(|end| end + seconds),
+            Timing::BeforeEnd(name, seconds) => self.named_end(name, ends).map(|end| end - seconds),
+            Timing::AfterPrevious => {
+                if index == 0 {
+                    return Some(0.0);
+                }
+                let previous = index - 1;
+                if self.layers[previous].duration.is_none() {
+                    panic!(
+                        "{} has no duration, so the next layer cannot follow its end",
+                        self.layer_label(previous)
+                    );
+                }
+                ends[previous]
+            }
+        }
+    }
+
+    fn named_start(&self, name: &str, starts: &[Option<f32>]) -> Option<f32> {
+        starts[self.layer_index(name)]
+    }
+
+    fn named_end(&self, name: &str, ends: &[Option<f32>]) -> Option<f32> {
+        let index = self.layer_index(name);
+        if self.layers[index].duration.is_none() {
+            panic!(
+                "{} has no duration, so another layer cannot anchor to its end",
+                self.layer_label(index)
+            );
+        }
+        ends[index]
+    }
+
+    fn layer_index(&self, name: &str) -> usize {
+        self.layers
+            .iter()
+            .position(|layer| layer.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("sound has no layer named {name}"))
+    }
+
+    fn layer_label(&self, index: usize) -> String {
+        match &self.layers[index].name {
+            Some(name) => format!("layer {name}"),
+            None => format!("layer {}", index + 1),
+        }
+    }
+
+    fn anchor_label(&self, index: usize) -> String {
+        let target = match &self.layers[index].timing {
+            Timing::At(_) => "a fixed time".to_string(),
+            Timing::AfterStart(name, _) | Timing::BeforeStart(name, _) => {
+                format!("the start of {name}")
+            }
+            Timing::AfterEnd(name, _) | Timing::BeforeEnd(name, _) => format!("the end of {name}"),
+            Timing::AfterPrevious => "the previous layer".to_string(),
+        };
+        format!("{} on {target}", self.layer_label(index))
+    }
+}
+
+impl Default for Sound {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -328,8 +586,8 @@ pub fn peak(samples: &[f32]) -> f32 {
         .fold(0.0, f32::max)
 }
 
-fn render_layer(layer: &Layer, sample_rate: u32, sound_duration: f32, mix: &mut [f32]) {
-    let start = layer.start_at.max(0.0);
+fn render_layer(layer: &Layer, start: f32, sample_rate: u32, sound_duration: f32, mix: &mut [f32]) {
+    let start = start.max(0.0);
     let end = match layer.duration {
         Some(duration) => start + duration.max(0.0),
         None => sound_duration,
@@ -540,5 +798,94 @@ mod tests {
     fn noise_is_deterministic() {
         let sound = Sound::duration_secs(0.1).layer(Noise::white().seed(7).gain(0.5));
         assert_eq!(sound.render(8_000), sound.render(8_000));
+    }
+
+    #[test]
+    fn a_fixed_duration_keeps_the_same_definition_text() {
+        let sound = Sound::duration_secs(0.2).layer(Oscillator::sine(100.0).gain(0.2));
+        let same = Sound::new()
+            .fixed_duration(0.2)
+            .layer(Oscillator::sine(100.0).gain(0.2));
+        assert_eq!(
+            sound.canonical(44_100),
+            "\
+engine=1 rate=44100 duration=0.200000
+osc sine freq=100.000000 sweep=none start=0 dur=full gain=0.200000 env=none lp=none hp=none"
+        );
+        assert_eq!(sound.definition_hash(44_100), same.definition_hash(44_100));
+    }
+
+    #[test]
+    fn named_layers_follow_each_other_and_padding_is_silence() {
+        let sound = Sound::new()
+            .layer_named("hiss", Noise::white().duration(0.80).gain(0.0))
+            .layer_named(
+                "clunk",
+                Oscillator::sine(110.0)
+                    .after_end("hiss", 0.05)
+                    .duration(0.15)
+                    .gain(0.0),
+            )
+            .layer_named(
+                "ring",
+                Oscillator::triangle(720.0)
+                    .before_end("clunk", 0.03)
+                    .duration(0.40)
+                    .gain(0.5),
+            );
+        let ring_end = 0.80 + 0.05 + 0.15 - 0.03 + 0.40;
+        assert!((sound.duration() - ring_end).abs() < 1.0e-5);
+
+        let padded = sound.clone().padding(0.20);
+        assert!((padded.duration() - (ring_end + 0.20)).abs() < 1.0e-5);
+        let samples = padded.render(1_000);
+        assert_eq!(samples.len(), 1_570);
+        assert!(samples[1_400..].iter().all(|sample| *sample == 0.0));
+        assert!(
+            samples[1_000..1_100]
+                .iter()
+                .any(|sample| sample.abs() > 0.1)
+        );
+    }
+
+    #[test]
+    fn an_appended_layer_starts_when_the_previous_one_ends() {
+        let sound = Sound::new()
+            .layer(Oscillator::sine(100.0).duration(0.20).gain(0.0))
+            .append_layer(Oscillator::sine(440.0).duration(0.10).gain(0.8));
+        assert!((sound.duration() - 0.30).abs() < 1.0e-5);
+        let samples = sound.render(1_000);
+        assert!(samples[..150].iter().all(|sample| *sample == 0.0));
+        assert!(samples[200..280].iter().any(|sample| sample.abs() > 0.2));
+    }
+
+    #[test]
+    fn a_layer_before_the_start_pulls_the_sound_forward() {
+        let sound = Sound::new()
+            .layer_named("hiss", Oscillator::sine(40.0).duration(0.20).gain(0.0))
+            .layer_named(
+                "lead",
+                Oscillator::sine(440.0)
+                    .before_start("hiss", 0.10)
+                    .duration(0.10)
+                    .gain(0.8),
+            );
+        assert!((sound.duration() - 0.30).abs() < 1.0e-5);
+        let samples = sound.render(1_000);
+        assert!(samples[..80].iter().any(|sample| sample.abs() > 0.2));
+        assert!(samples[200].abs() < 0.01);
+    }
+
+    #[test]
+    #[should_panic(expected = "sound has no layer named missing")]
+    fn an_unknown_anchor_names_the_missing_layer() {
+        let _ = Sound::new()
+            .layer_named("hiss", Noise::white().duration(0.2))
+            .layer(
+                Oscillator::sine(110.0)
+                    .after_end("missing", 0.0)
+                    .duration(0.1),
+            )
+            .duration();
     }
 }
