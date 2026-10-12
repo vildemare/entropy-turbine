@@ -1,8 +1,11 @@
 //! The brass crossing line and the shop that opens after a phase.
 
+use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::text::{FontSize, FontSource};
 use bevy::time::Virtual;
+use bevy::ui::Pressed;
+use bevy::ui_widgets::Button;
 
 use crate::audio::{self, SoundBank};
 use crate::combat::{Health, Projectile};
@@ -166,6 +169,7 @@ pub fn spawn(commands: &mut Commands, fonts: &UiFonts) {
                     panel
                         .spawn((
                             Button,
+                            Hovered::default(),
                             CheckpointContinue,
                             Node {
                                 width: percent(100),
@@ -195,6 +199,7 @@ fn shop_button(panel: &mut ChildSpawnerCommands, fonts: &UiFonts, kind: UpgradeK
     panel
         .spawn((
             Button,
+            Hovered::default(),
             ShopPurchase(kind),
             Node {
                 width: percent(100),
@@ -295,32 +300,32 @@ pub fn handle_checkpoint_button(
         ),
         With<Player>,
     >,
-    mut buttons: Query<
-        (&Interaction, &mut BackgroundColor),
-        (Changed<Interaction>, With<CheckpointContinue>),
-    >,
+    mut colors: Query<(&Hovered, Has<Pressed>, &mut BackgroundColor), With<CheckpointContinue>>,
+    pressed: Query<(), (Added<Pressed>, With<CheckpointContinue>)>,
 ) {
-    for (interaction, mut background) in &mut buttons {
-        *background = BackgroundColor(match interaction {
-            Interaction::None => Color::srgb(0.24, 0.20, 0.14),
-            Interaction::Hovered => Color::srgb(0.34, 0.27, 0.17),
-            Interaction::Pressed => Color::srgb(0.48, 0.34, 0.17),
+    for (hovered, held, mut background) in &mut colors {
+        *background = BackgroundColor(if held {
+            Color::srgb(0.48, 0.34, 0.17)
+        } else if hovered.get() {
+            Color::srgb(0.34, 0.27, 0.17)
+        } else {
+            Color::srgb(0.24, 0.20, 0.14)
         });
-        if session.phase != Phase::Checkpoint || *interaction != Interaction::Pressed {
-            continue;
-        }
-        audio::play_ui(&mut commands, &sounds.menu_click);
-        for line in &lines {
-            commands.entity(line).despawn();
-        }
-        for (mut health, progression, mut stats, mut weapon) in &mut players {
-            player::apply_progression(*progression, &mut stats, &mut health, &mut weapon, true);
-        }
-        director.next_phase();
-        session.phase = Phase::Playing;
-        session.suppress_fire_until_release = true;
-        time.unpause();
     }
+    if session.phase != Phase::Checkpoint || pressed.is_empty() {
+        return;
+    }
+    audio::play_ui(&mut commands, &sounds.menu_click);
+    for line in &lines {
+        commands.entity(line).despawn();
+    }
+    for (mut health, progression, mut stats, mut weapon) in &mut players {
+        player::apply_progression(*progression, &mut stats, &mut health, &mut weapon, true);
+    }
+    director.next_phase();
+    session.phase = Phase::Playing;
+    session.suppress_fire_until_release = true;
+    time.unpause();
 }
 
 pub fn handle_shop_buttons(
@@ -336,7 +341,7 @@ pub fn handle_shop_buttons(
         ),
         With<Player>,
     >,
-    buttons: Query<(&Interaction, &ShopPurchase), (Changed<Interaction>, With<Button>)>,
+    buttons: Query<&ShopPurchase, (Added<Pressed>, With<Button>)>,
 ) {
     if session.phase != Phase::Checkpoint {
         return;
@@ -344,10 +349,7 @@ pub fn handle_shop_buttons(
     let Ok((mut health, mut progression, mut stats, mut weapon)) = players.single_mut() else {
         return;
     };
-    for (interaction, purchase) in &buttons {
-        if *interaction != Interaction::Pressed {
-            continue;
-        }
+    for purchase in &buttons {
         let (_, Some(price)) = offer(purchase.0, &progression) else {
             continue;
         };
@@ -372,7 +374,7 @@ pub fn sync_checkpoint_menu(
     mut summary: Query<&mut Text, (With<CheckpointSummary>, Without<ShopLabel>)>,
     players: Query<&PlayerProgression, With<Player>>,
     mut labels: Query<(&ShopLabel, &mut Text), Without<CheckpointSummary>>,
-    mut buttons: Query<(&ShopPurchase, &Interaction, &mut BackgroundColor)>,
+    mut buttons: Query<(&ShopPurchase, &Hovered, Has<Pressed>, &mut BackgroundColor)>,
 ) {
     for mut visibility in &mut overlay {
         *visibility = if session.phase == Phase::Checkpoint {
@@ -397,15 +399,15 @@ pub fn sync_checkpoint_menu(
             None => format!("{description}     MAXED"),
         };
     }
-    for (purchase, interaction, mut background) in &mut buttons {
+    for (purchase, hovered, held, mut background) in &mut buttons {
         let (_, price) = offer(purchase.0, progression);
         let affordable = price.is_some_and(|price| session.points >= price);
         *background = BackgroundColor(if !affordable {
             Color::srgb(0.14, 0.13, 0.11)
-        } else if *interaction == Interaction::Hovered {
-            Color::srgb(0.34, 0.27, 0.17)
-        } else if *interaction == Interaction::Pressed {
+        } else if held {
             Color::srgb(0.48, 0.34, 0.17)
+        } else if hovered.get() {
+            Color::srgb(0.34, 0.27, 0.17)
         } else {
             Color::srgb(0.24, 0.20, 0.14)
         });
@@ -447,7 +449,7 @@ mod tests {
         app.world_mut().spawn((
             Button,
             CheckpointContinue,
-            Interaction::Pressed,
+            Pressed,
             BackgroundColor(Color::BLACK),
         ));
         app.update();
@@ -485,11 +487,8 @@ mod tests {
                 GunslingerWeapon::default(),
             ))
             .id();
-        app.world_mut().spawn((
-            Button,
-            ShopPurchase(UpgradeKind::Health),
-            Interaction::Pressed,
-        ));
+        app.world_mut()
+            .spawn((Button, ShopPurchase(UpgradeKind::Health), Pressed));
         app.update();
         let session = app.world().resource::<Session>();
         assert_eq!(session.points, 14);
@@ -544,8 +543,7 @@ mod tests {
             UpgradeKind::Capacity,
             UpgradeKind::Recharge,
         ] {
-            app.world_mut()
-                .spawn((Button, ShopPurchase(kind), Interaction::Pressed));
+            app.world_mut().spawn((Button, ShopPurchase(kind), Pressed));
         }
         app.update();
         assert_eq!(app.world().resource::<Session>().points, 0);
@@ -595,7 +593,7 @@ mod tests {
             .world_mut()
             .spawn((
                 ShopPurchase(UpgradeKind::Health),
-                Interaction::None,
+                Hovered::default(),
                 BackgroundColor(Color::BLACK),
             ))
             .id();

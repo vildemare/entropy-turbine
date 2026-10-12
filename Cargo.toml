@@ -12,7 +12,7 @@ default-members = ["."]
 package = ["dep:zip"]
 
 [dependencies]
-bevy = { version = "0.19", default-features = false, features = ["3d", "ui", "audio", "wav", "file_watcher"] }
+bevy = { version = "0.20", default-features = false, features = ["3d", "ui", "audio", "wav", "file_watcher"] }
 zip = { version = "2", optional = true, default-features = false, features = ["deflate"] }
 
 [[bin]]

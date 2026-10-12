@@ -1,8 +1,11 @@
 //! Escape menu. Pausing freezes gameplay time and suppresses the next shot.
 
+use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::text::{FontSize, FontSource};
 use bevy::time::Virtual;
+use bevy::ui::Pressed;
+use bevy::ui_widgets::Button;
 
 use crate::audio::{self, SoundBank};
 use crate::session::{Phase, Session};
@@ -89,6 +92,7 @@ fn pause_button(
     panel
         .spawn((
             Button,
+            Hovered::default(),
             action,
             Node {
                 width: percent(100),
@@ -144,20 +148,22 @@ pub fn handle_pause_buttons(
     mut exit: MessageWriter<AppExit>,
     sounds: Res<SoundBank>,
     mut commands: Commands,
-    mut buttons: Query<
-        (&Interaction, &PauseAction, &mut BackgroundColor),
-        (Changed<Interaction>, With<Button>),
-    >,
+    mut colors: Query<(&Hovered, Has<Pressed>, &mut BackgroundColor), With<PauseAction>>,
+    pressed: Query<&PauseAction, (Added<Pressed>, With<Button>)>,
 ) {
-    for (interaction, action, mut background) in &mut buttons {
-        *background = BackgroundColor(match interaction {
-            Interaction::None => Color::srgb(0.24, 0.20, 0.14),
-            Interaction::Hovered => Color::srgb(0.34, 0.27, 0.17),
-            Interaction::Pressed => Color::srgb(0.48, 0.34, 0.17),
+    for (hovered, held, mut background) in &mut colors {
+        *background = BackgroundColor(if held {
+            Color::srgb(0.48, 0.34, 0.17)
+        } else if hovered.get() {
+            Color::srgb(0.34, 0.27, 0.17)
+        } else {
+            Color::srgb(0.24, 0.20, 0.14)
         });
-        if session.phase != Phase::Paused || *interaction != Interaction::Pressed {
-            continue;
-        }
+    }
+    if session.phase != Phase::Paused {
+        return;
+    }
+    for action in &pressed {
         audio::play_ui(&mut commands, &sounds.menu_click);
         match action {
             PauseAction::Continue => {
@@ -253,7 +259,7 @@ mod tests {
         app.world_mut().spawn((
             Button,
             PauseAction::Continue,
-            Interaction::Pressed,
+            Pressed,
             BackgroundColor(Color::BLACK),
         ));
         app.update();
@@ -269,7 +275,7 @@ mod tests {
         app.world_mut().spawn((
             Button,
             PauseAction::Exit,
-            Interaction::Pressed,
+            Pressed,
             BackgroundColor(Color::BLACK),
         ));
         app.update();
