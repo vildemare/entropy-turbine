@@ -1,22 +1,24 @@
 //! Enemies and the cover they fight from.
 //!
-//! `encounter` decides when a wave exists. `behavior` decides how each enemy moves and shoots.
+//! `encounter` decides when a wave exists. `behavior` decides how each enemy moves and what it can see. `rifle` owns the burst and the round.
 
 use bevy::prelude::*;
 
 mod behavior;
 mod encounter;
 mod grenadier;
+mod rifle;
 mod zap_bot;
 
 pub use behavior::{
-    Drift, cleanup_behind_camera, move_enemies, separate_enemies, separate_from_cover,
-    shoot_enemies,
+    Drift, apply_volleys, cleanup_behind_camera, move_enemies, separate_enemies,
+    separate_from_cover, shoot_enemies,
 };
 pub use encounter::{
     EncounterDirector, WAVES_PER_PHASE, place_covers, spawn_groups, spawn_reinforcements,
 };
 pub use grenadier::{Grenadier, VolleyPiece, fly_grenades, walk_grenadiers};
+pub use rifle::{Rifle, RifleAim, RoundFired, fire_rifles};
 pub use zap_bot::{ZapBot, drive_zap_bots, spawn_zap_bots};
 
 /// Which machine this is. Health, pace, and weapons live on its
@@ -71,12 +73,6 @@ pub enum EnemyState {
     Retreating,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AttackPhase {
-    Burst,
-    Reloading,
-}
-
 #[derive(Component)]
 pub struct Enemy {
     pub group_id: u32,
@@ -89,12 +85,8 @@ pub struct Enemy {
     pub slot_x: f32,
     pub flank_x: f32,
     pub hold_timer: f32,
-    pub fire_timer: f32,
-    pub attack_phase: AttackPhase,
-    pub shots_left: u8,
     pub evade_direction: f32,
     pub sight_blocked: bool,
-    pub reload_duration: f32,
     pub drift: Drift,
 }
 

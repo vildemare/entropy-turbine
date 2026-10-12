@@ -6,8 +6,9 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
 use super::grenadier;
+use super::rifle::Rifle;
 use super::zap_bot::ZAP_SCHEDULE;
-use super::{AttackPhase, Cover, Drift, Enemy, EnemyKind, EnemyReward, EnemyState, Tactic};
+use super::{Cover, Drift, Enemy, EnemyKind, EnemyReward, EnemyState, Tactic};
 use crate::combat::{Abilities, Faction, Health, HitCircle};
 use crate::player::MovementSpeed;
 use crate::session::{Phase, Session};
@@ -332,14 +333,11 @@ pub fn spawn_groups(
                         slot_x,
                         flank_x,
                         hold_timer: 0.45 + director.random() * 0.45,
-                        fire_timer: 0.2 + director.random() * 0.75,
-                        attack_phase: AttackPhase::Burst,
-                        shots_left: rifle.burst,
                         evade_direction: side,
                         sight_blocked: false,
-                        reload_duration: rifle.reload.as_secs_f32(),
                         drift: Drift::default(),
                     },
+                    Rifle::from_spec(rifle, 0.2 + director.random() * 0.75),
                     Health(gunner.health()),
                     gunner.runtime_abilities(),
                     HitCircle {
@@ -443,14 +441,11 @@ pub fn spawn_reinforcements(
                         slot_x: x,
                         flank_x: x,
                         hold_timer: 0.0,
-                        fire_timer: 0.35 + director.random() * 0.6,
-                        attack_phase: AttackPhase::Burst,
-                        shots_left: rifle.burst,
                         evade_direction: side,
                         sight_blocked: false,
-                        reload_duration: rifle.reload.as_secs_f32(),
                         drift: Drift::default(),
                     },
+                    Rifle::from_spec(rifle, 0.35 + director.random() * 0.6),
                     Health(gunner.health()),
                     gunner.runtime_abilities(),
                     HitCircle {
@@ -880,12 +875,8 @@ mod tests {
                     slot_x: 0.0,
                     flank_x: 0.0,
                     hold_timer: 0.0,
-                    fire_timer: 0.0,
-                    attack_phase: AttackPhase::Burst,
-                    shots_left: crate::character::trooper().rifle().burst,
                     evade_direction: 1.0,
                     sight_blocked: false,
-                    reload_duration: 1.5,
                     drift: Drift::default(),
                 },
                 Transform::from_xyz(0.0, 0.68, -20.0),

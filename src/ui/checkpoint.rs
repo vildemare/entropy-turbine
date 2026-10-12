@@ -629,12 +629,8 @@ mod tests {
                 slot_x: 0.0,
                 flank_x: 0.0,
                 hold_timer: 0.0,
-                fire_timer: 0.0,
-                attack_phase: crate::enemy::AttackPhase::Burst,
-                shots_left: 3,
                 evade_direction: 1.0,
                 sight_blocked: false,
-                reload_duration: 1.0,
                 drift: Drift::default(),
             })
             .id();

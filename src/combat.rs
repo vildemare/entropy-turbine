@@ -383,7 +383,7 @@ pub fn expire_projectiles(
 mod tests {
     use super::*;
     use crate::ability::HIT_GRACE;
-    use crate::enemy::{AttackPhase, EnemyKind, EnemyReward, EnemyState, Tactic};
+    use crate::enemy::{EnemyKind, EnemyReward, EnemyState, Tactic};
 
     fn prepare(app: &mut App) {
         app.insert_resource(Session::default())
@@ -508,12 +508,8 @@ mod tests {
             slot_x: 0.0,
             flank_x: 0.0,
             hold_timer: 0.0,
-            fire_timer: 0.0,
-            attack_phase: AttackPhase::Burst,
-            shots_left: 3,
             evade_direction: 1.0,
             sight_blocked: false,
-            reload_duration: 1.55,
             drift: Drift::default(),
         }
     }

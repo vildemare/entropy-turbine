@@ -36,6 +36,8 @@ fn main() {
         .init_resource::<enemy::EncounterDirector>()
         .add_message::<ability::Struck>()
         .add_message::<ability::Notice>()
+        .add_message::<enemy::RifleAim>()
+        .add_message::<enemy::RoundFired>()
         .add_plugins(MaterialPlugin::<shield::ShieldMaterial>::default())
         .add_systems(Startup, (startup::setup, shield::setup))
         .add_systems(
@@ -76,6 +78,8 @@ fn main() {
             (
                 enemy::cleanup_behind_camera,
                 enemy::shoot_enemies,
+                enemy::fire_rifles,
+                enemy::apply_volleys,
                 enemy::spawn_reinforcements,
                 ability::recover_shields,
                 shield::sync_shimmer,

@@ -1,21 +1,30 @@
 //! How a living enemy moves, keeps its distance, aims, and leaves the view.
+//!
+//! What the gunner can see leaves as a [`RifleAim`]. The rifle spends the burst.
+//! A [`RoundFired`] comes back when a round leaves.
 
 use bevy::{prelude::*, window::PrimaryWindow};
 
 use std::time::Duration;
 
-use super::{AttackPhase, Cover, Enemy, EnemyKind, EnemyReward, EnemyState, Tactic};
-use crate::audio::{self, SoundBank};
-use crate::character::RifleSpec;
-use crate::combat::{self, Damage, Delivery, Faction, Lifetime, Material, Projectile};
+use super::rifle::{Look, Rifle, RifleAim, RoundFired};
+use super::{Cover, Enemy, EnemyState, Tactic};
+use crate::combat::{self, Faction, Projectile};
 use crate::player::{MovementSpeed, Player};
 use crate::session::{Phase, Session};
 use crate::world::camera::{self, FollowCamera};
 use crate::world::route::{self, Boulder};
-use crate::world::visuals::Visuals;
 
-fn rifle_of(kind: Option<EnemyKind>) -> RifleSpec {
-    *kind.unwrap_or(EnemyKind::Trooper).definition().rifle()
+pub fn apply_volleys(mut fired: MessageReader<RoundFired>, mut enemies: Query<&mut Enemy>) {
+    for round in fired.read().copied() {
+        let Ok(mut enemy) = enemies.get_mut(round.shooter) else {
+            continue;
+        };
+        enemy.engaged = true;
+        if round.burst_spent {
+            enemy.evade_direction *= -1.0;
+        }
+    }
 }
 
 /// Cover approach and the fall back.
@@ -174,8 +183,8 @@ pub fn move_enemies(
             &mut Transform,
             &mut Enemy,
             &MovementSpeed,
+            Option<&Rifle>,
             Option<&mut Retreating>,
-            Option<&EnemyReward>,
         ),
         (With<Enemy>, Without<Player>),
     >,
@@ -184,8 +193,7 @@ pub fn move_enemies(
         return;
     }
     let dt = time.delta_secs();
-    for (mut transform, mut enemy, speed, retreating, reward) in &mut enemies {
-        let rifle = rifle_of(reward.map(|reward| reward.kind));
+    for (mut transform, mut enemy, speed, rifle, retreating) in &mut enemies {
         let position = transform.translation;
         let target_player = players.iter().min_by(|a, b| {
             a.translation
@@ -260,7 +268,10 @@ pub fn move_enemies(
                 if distance > 0.01 {
                     transform.rotation = Quat::from_rotation_y(horizontal.x.atan2(horizontal.z));
                 }
-                if enemy.attack_phase == AttackPhase::Reloading || enemy.sight_blocked {
+                let reloading = rifle.is_some_and(Rifle::reloading);
+                let holding = rifle.is_some_and(Rifle::holding_fresh_burst);
+                let sight = rifle.map(|rifle| rifle.sight).unwrap_or(f32::MAX);
+                if reloading || enemy.sight_blocked {
                     let forward = if distance > 8.0 { 0.5 } else { -0.1 };
                     let direction = Vec3::new(enemy.evade_direction, 0.0, forward).normalize();
                     let max_step = speed.0 * dt;
@@ -277,9 +288,7 @@ pub fn move_enemies(
                     {
                         enemy.evade_direction *= -1.0;
                     }
-                } else if distance > rifle.sight
-                    || distance > 5.5 && enemy.fire_timer > 0.0 && enemy.shots_left == rifle.burst
-                {
+                } else if distance > sight || distance > 5.5 && holding {
                     let direction = match enemy.tactic {
                         Tactic::Direct => horizontal.normalize_or_zero(),
                         Tactic::Straight => Vec3::Z,
@@ -438,17 +447,14 @@ pub fn separate_from_cover(position: &mut Vec3, radius: f32, center: Vec3, cover
 }
 
 pub fn shoot_enemies(
-    time: Res<Time>,
     session: Res<Session>,
-    visuals: Res<Visuals>,
-    sounds: Res<SoundBank>,
-    mut commands: Commands,
     players: Query<&Transform, (With<Player>, Without<Enemy>)>,
     covers: Query<(&Transform, &Cover), Without<Enemy>>,
     boulders: Query<&Transform, (With<Boulder>, Without<Enemy>)>,
+    mut aims: MessageWriter<RifleAim>,
     mut enemy_queries: ParamSet<(
         Query<(Entity, &Transform, &Enemy)>,
-        Query<(Entity, &mut Transform, &mut Enemy, Option<&EnemyReward>)>,
+        Query<(Entity, &mut Transform, &mut Enemy, Option<&Rifle>)>,
     )>,
     mut positions: Local<Vec<(Entity, Vec3, f32)>>,
 ) {
@@ -459,18 +465,11 @@ pub fn shoot_enemies(
     for (entity, transform, enemy) in enemy_queries.p0().iter() {
         positions.push((entity, transform.translation, enemy.radius));
     }
-    for (entity, mut transform, mut enemy, reward) in enemy_queries.p1().iter_mut() {
-        let rifle = rifle_of(reward.map(|reward| reward.kind));
-        if enemy.state == EnemyState::Retreating {
+    for (entity, mut transform, mut enemy, rifle) in enemy_queries.p1().iter_mut() {
+        let Some(rifle) = rifle else {
             continue;
-        }
-        if enemy.state == EnemyState::Advancing && enemy.attack_phase == AttackPhase::Reloading {
-            enemy.fire_timer -= time.delta_secs();
-            if enemy.fire_timer <= 0.0 {
-                enemy.attack_phase = AttackPhase::Burst;
-                enemy.shots_left = rifle.burst;
-                enemy.fire_timer = 0.1;
-            }
+        };
+        if enemy.state == EnemyState::Retreating {
             continue;
         }
         let Some(player) = players.iter().min_by(|a, b| {
@@ -478,88 +477,73 @@ pub fn shoot_enemies(
                 .distance_squared(transform.translation)
                 .total_cmp(&b.translation.distance_squared(transform.translation))
         }) else {
+            if enemy.state == EnemyState::Advancing {
+                aims.write(RifleAim {
+                    shooter: entity,
+                    acquired: false,
+                    look: Look::Unseen,
+                    muzzle: transform.translation,
+                    direction: Vec3::ZERO,
+                    distance: 0.0,
+                });
+            }
             continue;
         };
         let origin = Vec3::new(transform.translation.x, 0.75, transform.translation.z);
         let destination = Vec3::new(player.translation.x, 0.75, player.translation.z);
         let direction = (destination - origin).normalize_or_zero();
-        if direction == Vec3::ZERO
-            || origin.distance_squared(destination) > rifle.sight * rifle.sight
-        {
-            if enemy.state == EnemyState::Advancing {
-                enemy.sight_blocked = false;
-                enemy.fire_timer = enemy.fire_timer.min(0.3);
-            }
-            continue;
-        }
-        let start = origin + direction * (enemy.radius + 0.28);
-        let blocked_by_ally = positions.iter().any(|(other, position, radius)| {
-            *other != entity
-                && combat::segment_circle_t(start, destination, *position, *radius + 0.15)
+        let in_range = direction != Vec3::ZERO
+            && origin.distance_squared(destination) <= rifle.sight * rifle.sight;
+        let (look, muzzle) = if !in_range {
+            (Look::Far, origin)
+        } else {
+            let start = origin + direction * (enemy.radius + 0.28);
+            let blocked_by_ally = positions.iter().any(|(other, position, radius)| {
+                *other != entity
+                    && combat::segment_circle_t(start, destination, *position, *radius + 0.15)
+                        .is_some_and(|t| t < 0.98)
+            });
+            let blocked_by_cover = covers.iter().any(|(cover_transform, cover)| {
+                combat::segment_cover_t(start, destination, cover_transform.translation, cover)
                     .is_some_and(|t| t < 0.98)
-        });
-        let blocked_by_cover = covers.iter().any(|(cover_transform, cover)| {
-            combat::segment_cover_t(start, destination, cover_transform.translation, cover)
-                .is_some_and(|t| t < 0.98)
-        });
-        let blocked_by_boulder = boulders.iter().any(|boulder| {
-            combat::segment_boulder_t(start, destination, boulder).is_some_and(|t| t < 0.98)
-        });
-        let clear_sight = !blocked_by_ally && !blocked_by_cover && !blocked_by_boulder;
+            });
+            let blocked_by_boulder = boulders.iter().any(|boulder| {
+                combat::segment_boulder_t(start, destination, boulder).is_some_and(|t| t < 0.98)
+            });
+            if blocked_by_ally || blocked_by_cover || blocked_by_boulder {
+                (Look::Blocked, start)
+            } else {
+                (Look::Clear, start)
+            }
+        };
+        let mut acquired = false;
         if enemy.state != EnemyState::Advancing {
-            if !clear_sight {
+            if look != Look::Clear {
                 continue;
             }
             // A clear view interrupts entry, sheltering, or the route around
-            // cover. The first shot happens this frame.
+            // cover. The rifle fires on this same aim.
             enemy.state = EnemyState::Advancing;
-            enemy.attack_phase = AttackPhase::Burst;
-            enemy.shots_left = rifle.burst;
-            enemy.fire_timer = 0.0;
+            acquired = true;
             transform.scale.y = 1.0;
             transform.translation.y = enemy.height;
         }
-        let aim = destination - origin;
-        transform.rotation = Quat::from_rotation_y(aim.x.atan2(aim.z));
-        enemy.sight_blocked = !clear_sight;
-        if enemy.sight_blocked {
-            enemy.fire_timer = enemy.fire_timer.min(0.18);
-            continue;
+        if look == Look::Far {
+            enemy.sight_blocked = false;
         }
-        enemy.fire_timer -= time.delta_secs();
-        if enemy.fire_timer > 0.0 {
-            continue;
+        if matches!(look, Look::Clear | Look::Blocked) {
+            let aim = destination - origin;
+            transform.rotation = Quat::from_rotation_y(aim.x.atan2(aim.z));
+            enemy.sight_blocked = look == Look::Blocked;
         }
-        commands.spawn((
-            Projectile {
-                direction,
-                speed: rifle.round_speed,
-                radius: rifle.round_radius,
-                previous: start,
-                spent: false,
-                faction: Faction::Enemy,
-                material: Material::Metal,
-                delivery: Delivery::Kinetic,
-                owner: entity,
-            },
-            Damage(rifle.damage),
-            Lifetime(2.5),
-            Mesh3d(visuals.bullet_mesh.clone()),
-            MeshMaterial3d(visuals.enemy_bullet_material.clone()),
-            Transform::from_translation(start),
-        ));
-        let volume = (0.26 - origin.distance(destination) * 0.004).clamp(0.08, 0.26);
-        let speed = 0.94 + (rifle.burst - enemy.shots_left) as f32 * 0.04;
-        audio::play_game(&mut commands, sounds.enemy_shot(), volume, speed);
-        enemy.engaged = true;
-        enemy.shots_left -= 1;
-        if enemy.shots_left == 0 {
-            enemy.attack_phase = AttackPhase::Reloading;
-            enemy.fire_timer = enemy.reload_duration;
-            enemy.evade_direction *= -1.0;
-        } else {
-            enemy.fire_timer = 0.38 + enemy.reload_duration * 0.06;
-        }
+        aims.write(RifleAim {
+            shooter: entity,
+            acquired,
+            look,
+            muzzle,
+            direction,
+            distance: origin.distance(destination),
+        });
     }
 }
 
@@ -635,6 +619,14 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::audio::SoundBank;
+    use crate::combat::{Delivery, Material};
+    use crate::enemy::{Rifle, fire_rifles};
+    use crate::world::visuals::Visuals;
+
+    fn trooper_rifle(opening: f32) -> Rifle {
+        Rifle::from_spec(crate::character::trooper().rifle(), opening)
+    }
 
     #[test]
     fn enemies_retreat_sideways_before_leaving_and_their_shots_stop() {
@@ -701,11 +693,14 @@ mod tests {
             .insert_resource(Session::default())
             .insert_resource(Visuals::default())
             .insert_resource(SoundBank::default())
-            .add_systems(Update, shoot_enemies);
+            .add_message::<RifleAim>()
+            .add_message::<RoundFired>()
+            .add_systems(Update, (shoot_enemies, fire_rifles, apply_volleys).chain());
         let enemy = app
             .world_mut()
             .spawn((
                 test_enemy(EnemyState::Retreating),
+                trooper_rifle(0.0),
                 Transform::from_xyz(0.0, 0.68, -8.0),
             ))
             .id();
@@ -763,12 +758,8 @@ mod tests {
             slot_x: 0.0,
             flank_x: 4.0,
             hold_timer: 0.0,
-            fire_timer: 0.8,
-            attack_phase: AttackPhase::Burst,
-            shots_left: crate::character::trooper().rifle().burst,
             evade_direction: 1.0,
             sight_blocked: false,
-            reload_duration: 1.5,
             drift: Drift::default(),
         }
     }
@@ -779,7 +770,9 @@ mod tests {
             .insert_resource(Session::default())
             .insert_resource(Visuals::default())
             .insert_resource(SoundBank::default())
-            .add_systems(Update, shoot_enemies);
+            .add_message::<RifleAim>()
+            .add_message::<RoundFired>()
+            .add_systems(Update, (shoot_enemies, fire_rifles, apply_volleys).chain());
         app.world_mut().spawn((
             Cover {
                 half_width: 2.7,
@@ -792,6 +785,7 @@ mod tests {
             .world_mut()
             .spawn((
                 test_enemy(EnemyState::Flanking),
+                trooper_rifle(0.8),
                 Transform::from_xyz(4.0, 0.68, -24.55),
             ))
             .id();
@@ -799,6 +793,7 @@ mod tests {
             .world_mut()
             .spawn((
                 test_enemy(EnemyState::Holding),
+                trooper_rifle(0.8),
                 Transform::from_xyz(0.0, 0.4, -24.55).with_scale(Vec3::new(1.0, 0.58, 1.0)),
             ))
             .id();
@@ -812,7 +807,7 @@ mod tests {
         let flanker_state = app.world().get::<Enemy>(flanker).unwrap();
         assert_eq!(flanker_state.state, EnemyState::Advancing);
         assert_eq!(
-            flanker_state.shots_left,
+            app.world().get::<Rifle>(flanker).unwrap().shots_left,
             crate::character::trooper().rifle().burst - 1
         );
         assert_eq!(
@@ -834,7 +829,12 @@ mod tests {
             .insert_resource(Session::default())
             .insert_resource(Visuals::default())
             .insert_resource(SoundBank::default())
-            .add_systems(Update, (shoot_enemies, move_enemies).chain());
+            .add_message::<RifleAim>()
+            .add_message::<RoundFired>()
+            .add_systems(
+                Update,
+                (shoot_enemies, fire_rifles, apply_volleys, move_enemies).chain(),
+            );
         let gunner = app
             .world_mut()
             .spawn((
@@ -849,14 +849,11 @@ mod tests {
                     slot_x: 0.0,
                     flank_x: 0.0,
                     hold_timer: 0.0,
-                    fire_timer: 0.0,
-                    attack_phase: AttackPhase::Burst,
-                    shots_left: crate::character::trooper().rifle().burst,
                     evade_direction: -1.0,
                     sight_blocked: false,
-                    reload_duration: 1.5,
                     drift: Drift::default(),
                 },
+                trooper_rifle(0.0),
                 MovementSpeed(3.0),
                 Transform::from_xyz(0.0, 0.68, -10.0),
             ))
@@ -870,10 +867,7 @@ mod tests {
                 .advance_by(Duration::from_millis(500));
             app.update();
         }
-        assert_eq!(
-            app.world().get::<Enemy>(gunner).unwrap().attack_phase,
-            AttackPhase::Reloading
-        );
+        assert!(app.world().get::<Rifle>(gunner).unwrap().reloading());
         assert_eq!(
             app.world_mut()
                 .query::<&Projectile>()
@@ -954,9 +948,18 @@ mod tests {
             .insert_resource(Session::default())
             .insert_resource(Visuals::default())
             .insert_resource(SoundBank::default())
+            .add_message::<RifleAim>()
+            .add_message::<RoundFired>()
             .add_systems(
                 Update,
-                (move_enemies, separate_enemies, shoot_enemies).chain(),
+                (
+                    move_enemies,
+                    separate_enemies,
+                    shoot_enemies,
+                    fire_rifles,
+                    apply_volleys,
+                )
+                    .chain(),
             );
         app.world_mut().spawn((
             Cover {
@@ -1002,11 +1005,11 @@ mod tests {
         let mut standing = test_enemy(EnemyState::Advancing);
         standing.drift.backing = UNSTICK.reverse;
         standing.drift.attempt = Vec2::new(0.0, 1.0);
-        standing.fire_timer = 0.0;
         let shooter = app
             .world_mut()
             .spawn((
                 standing,
+                trooper_rifle(0.0),
                 MovementSpeed(3.0),
                 Transform::from_xyz(6.0, 0.68, -8.0),
             ))
