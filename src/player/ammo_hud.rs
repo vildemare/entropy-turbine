@@ -5,13 +5,20 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 use bevy::prelude::*;
 use bevy::text::{FontSize, FontSource};
 
-use super::GUNSLINGER_WEAPON;
 use crate::player::{GunslingerWeapon, LocalPlayer};
 use crate::ui::UiFonts;
 
 const DRUM_CENTER: f32 = 70.0;
 const CHAMBER_SIZE: f32 = 19.0;
-const MAX_CHAMBERS_PER_GUN: usize = GUNSLINGER_WEAPON.max_capacity.div_ceil(2) as usize;
+
+fn max_chambers_per_gun() -> usize {
+    usize::from(
+        crate::character::gunslinger()
+            .revolver()
+            .max_capacity
+            .div_ceil(2),
+    )
+}
 
 #[derive(Component)]
 pub struct AmmoHud {
@@ -75,7 +82,7 @@ pub fn spawn(commands: &mut Commands, fonts: &UiFonts) {
                         BackgroundColor(Color::srgb(0.06, 0.06, 0.055)),
                         BorderColor::all(Color::srgb(0.68, 0.49, 0.26)),
                     ));
-                    for index in 0..MAX_CHAMBERS_PER_GUN {
+                    for index in 0..max_chambers_per_gun() {
                         drum.spawn((
                             ChamberIcon { gun, index },
                             Node {

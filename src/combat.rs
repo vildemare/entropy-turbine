@@ -482,7 +482,7 @@ mod tests {
 
     fn player_circle() -> HitCircle {
         HitCircle {
-            radius: crate::units::units(crate::player::GUNSLINGER_PLAYER.hit_radius),
+            radius: crate::character::gunslinger().hit_radius(),
             faction: Faction::Player,
             swell: false,
         }

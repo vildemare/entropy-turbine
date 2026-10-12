@@ -104,25 +104,6 @@ impl Abilities {
         Self(vec![Ability::StopAlliedShots, Ability::HitPoints])
     }
 
-    /// An enemy with a flat plate in front of its hit points.
-    pub fn plated(reduction: u32) -> Self {
-        Self(vec![
-            Ability::StopAlliedShots,
-            Ability::ReduceDamage(reduction),
-            Ability::HitPoints,
-        ])
-    }
-
-    /// An enemy with an energy shield in front of its hit points.
-    /// The pool lives on [`EnergyShield`].
-    pub fn shielded() -> Self {
-        Self(vec![
-            Ability::StopAlliedShots,
-            Ability::EnergyShield,
-            Ability::HitPoints,
-        ])
-    }
-
     pub fn player() -> Self {
         Self(vec![
             Ability::HitGrace,

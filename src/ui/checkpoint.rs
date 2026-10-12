@@ -11,8 +11,7 @@ use crate::audio::{self, SoundBank};
 use crate::combat::{Health, Projectile};
 use crate::enemy::{Drift, EncounterDirector, Enemy, Grenadier, VolleyPiece, ZapBot};
 use crate::player::{
-    self, GUNSLINGER_PLAYER, GUNSLINGER_WEAPON, GunslingerWeapon, PLAYER_Y, Player,
-    PlayerProgression, PlayerStats, reload_wait_ms_for,
+    self, GunslingerWeapon, PLAYER_Y, Player, PlayerProgression, PlayerStats, reload_wait_ms_for,
 };
 use crate::session::{Phase, Session};
 use crate::ui::UiFonts;
@@ -57,16 +56,17 @@ fn seconds_label(milliseconds: u32) -> String {
 
 fn offer(kind: UpgradeKind, progression: &PlayerProgression) -> (String, Option<u32>) {
     let stats = progression.stats();
+    let gunslinger = crate::character::gunslinger();
     match kind {
         UpgradeKind::Health => {
-            let available = (stats.max_health < GUNSLINGER_PLAYER.max_health)
+            let available = (stats.max_health < gunslinger.max_health())
                 .then(|| upgrade_price(progression.health_level));
             (
                 if available.is_some() {
                     format!(
                         "MAX HEALTH   {} → {}",
                         stats.max_health,
-                        stats.max_health + GUNSLINGER_PLAYER.health_per_upgrade
+                        stats.max_health + gunslinger.health_per_upgrade()
                     )
                 } else {
                     format!("MAX HEALTH   {}", stats.max_health)
@@ -75,7 +75,7 @@ fn offer(kind: UpgradeKind, progression: &PlayerProgression) -> (String, Option<
             )
         }
         UpgradeKind::Capacity => {
-            let available = (stats.capacity < GUNSLINGER_WEAPON.max_capacity)
+            let available = (stats.capacity < gunslinger.revolver().max_capacity)
                 .then(|| upgrade_price(progression.capacity_level));
             (
                 if available.is_some() {
@@ -91,7 +91,8 @@ fn offer(kind: UpgradeKind, progression: &PlayerProgression) -> (String, Option<
             )
         }
         UpgradeKind::Recharge => {
-            let available = (stats.reload_wait_ms > GUNSLINGER_WEAPON.min_reload_wait_ms)
+            let available = (stats.reload_wait_ms
+                > gunslinger.revolver().min_reload.as_millis() as u32)
                 .then(|| upgrade_price(progression.reload_level));
             let next = reload_wait_ms_for(progression.reload_level + 1);
             (

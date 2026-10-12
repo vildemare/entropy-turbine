@@ -7,68 +7,41 @@
 //! direction of travel. A finished charge fires toward the nearest player, or
 //! along local +Z when the lane is empty.
 
+use std::time::Duration;
+
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
 use super::behavior::{self, Drift};
-use super::{Cover, EnemyKind, EnemyReward, Hull, Pace};
+use super::{Cover, EnemyKind, EnemyReward};
 use crate::audio::{self, SoundBank};
-use crate::combat::{
-    Abilities, Damage, Delivery, Faction, Health, HitCircle, Lifetime, Material, Projectile,
-};
+use crate::character::{CharacterDefinition, ZapperSpec};
+use crate::combat::{Damage, Delivery, Faction, Health, HitCircle, Lifetime, Material, Projectile};
 use crate::player::Player;
 use crate::session::{Phase, Session};
-use crate::units::units;
 use crate::world::camera::{self, FollowCamera};
 use crate::world::route;
 use crate::world::visuals::{self, Visuals};
 
-pub(crate) const ZAP_HULL: Hull = Hull {
-    health: 2,
-    reward: 1,
-    radius: 900,
-    height: 460,
-    visual_scale: 1.15,
-};
-
-pub(crate) const ZAP_PACE: Pace = Pace { speed: 1_500 };
-
-/// Flat plate in front of the cow's hit points. It stays under the Gunslinger's shot.
-pub(crate) const ZAP_ARMOR: u32 = 1;
-
-/// The charged jolt. Reach, speed, and the bolt's own radius belong to the weapon.
-/// Lengths and times are units. 1000 units is 1 metre and 1 second.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Jolt {
-    pub damage: u32,
-    pub charge: u32,
-    pub rest: u32,
-    pub bolt_speed: u32,
-    pub reach: u32,
-    pub bolt_radius: u32,
+fn cow() -> &'static CharacterDefinition {
+    crate::character::zap_bot()
 }
 
-pub(crate) const ZAP_JOLT: Jolt = Jolt {
-    damage: 120,
-    charge: 1_500,
-    rest: 450,
-    bolt_speed: 24_000,
-    reach: 8_000,
-    bolt_radius: 340,
-};
+fn jolt() -> &'static ZapperSpec {
+    cow().zapper()
+}
 
 /// When cows enter the field. This is the encounter schedule, not the jolt.
-/// Delay and interval are units. 1000 units is 1 second.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ZapSchedule {
-    pub delay: u32,
-    pub interval: u32,
+    pub delay: Duration,
+    pub interval: Duration,
     pub max_alive: usize,
 }
 
 pub(crate) const ZAP_SCHEDULE: ZapSchedule = ZapSchedule {
-    delay: 5_500,
-    interval: 8_000,
+    delay: Duration::from_millis(5_500),
+    interval: Duration::from_millis(8_000),
     max_alive: 3,
 };
 
@@ -117,27 +90,23 @@ pub fn spawn_zap_bots(
     if director.zap_timer > 0.0 {
         return;
     }
-    director.zap_timer = units(ZAP_SCHEDULE.interval);
+    director.zap_timer = ZAP_SCHEDULE.interval.as_secs_f32();
     if alive.iter().count() >= ZAP_SCHEDULE.max_alive {
         return;
     }
 
-    let hull = ZAP_HULL;
+    let hull = cow();
     let center_z = camera.translation.z - camera::CAMERA_BACK_OFFSET;
     let z = center_z - 32.0;
     let lane = director.random() * 1.6 - 0.8;
     let side = if director.random() < 0.5 { -1.0 } else { 1.0 };
-    let mut x = route::clamp_actor_x(route::centerline_x(z) + lane * 8.0, z, units(hull.radius));
+    let mut x = route::clamp_actor_x(route::centerline_x(z) + lane * 8.0, z, hull.radius());
     let blocks = cover_blocks(&covers);
     for _ in 0..5 {
-        if !blocked(
-            Vec3::new(x, units(hull.height), z),
-            units(hull.radius),
-            &blocks,
-        ) {
+        if !blocked(Vec3::new(x, hull.height(), z), hull.radius(), &blocks) {
             break;
         }
-        x = route::clamp_actor_x(x + side * 2.4, z, units(hull.radius));
+        x = route::clamp_actor_x(x + side * 2.4, z, hull.radius());
     }
 
     let prongs = materials.add(StandardMaterial {
@@ -148,7 +117,7 @@ pub fn spawn_zap_bots(
     let actor = commands
         .spawn((
             ZapBot {
-                radius: units(hull.radius),
+                radius: hull.radius(),
                 lane,
                 side,
                 drift: Drift::default(),
@@ -162,19 +131,19 @@ pub fn spawn_zap_bots(
                 kind: EnemyKind::ZapBot,
                 hit_player: false,
             },
-            Health(hull.health),
-            Abilities::plated(ZAP_ARMOR),
+            Health(hull.health()),
+            hull.runtime_abilities(),
             HitCircle {
-                radius: units(hull.radius),
+                radius: hull.radius(),
                 faction: Faction::Enemy,
                 swell: true,
             },
-            Transform::from_xyz(x, units(hull.height), z),
+            Transform::from_xyz(x, hull.height(), z),
             GlobalTransform::default(),
             Visibility::default(),
         ))
         .id();
-    spawn_visual(&mut commands, &visuals, actor, hull.visual_scale, prongs);
+    spawn_visual(&mut commands, &visuals, actor, hull.visual_scale(), prongs);
 }
 
 pub fn drive_zap_bots(
@@ -209,7 +178,7 @@ pub fn drive_zap_bots(
         .iter()
         .map(|transform| transform.translation)
         .collect();
-    let speed = units(ZAP_PACE.speed);
+    let speed = cow().speed();
 
     for (entity, mut transform, mut bot) in &mut bots {
         if transform.translation.z > exit_z {
@@ -268,7 +237,7 @@ pub fn drive_zap_bots(
             audio::play_game(&mut commands, &sounds.zap, 0.36, 1.0);
         }
         if let Some(mut material) = materials.get_mut(&bot.prongs) {
-            let heat = (bot.charge / units(ZAP_JOLT.charge)).clamp(0.0, 1.0);
+            let heat = (bot.charge / jolt().charge.as_secs_f32()).clamp(0.0, 1.0);
             let glow = heat.max(bot.flash);
             material.base_color =
                 Color::srgb(0.55 + 0.45 * glow, 0.26 + 0.58 * glow, 0.10 + 0.55 * glow);
@@ -279,7 +248,7 @@ pub fn drive_zap_bots(
 }
 
 fn player_in_bolt_range(position: Vec3, players: &[Vec3]) -> bool {
-    let reach = units(ZAP_JOLT.reach);
+    let reach = jolt().reach;
     players.iter().any(|player| {
         let dx = player.x - position.x;
         let dz = player.z - position.z;
@@ -311,7 +280,7 @@ fn step_charge(bot: &mut ZapBot, mut dt: f32, in_range: bool) -> ChargeTick {
         }
         bot.voiced = true;
         bot.charge = dt;
-        if bot.charge >= units(ZAP_JOLT.charge) {
+        if bot.charge >= jolt().charge.as_secs_f32() {
             let mut tick = finish_charge(bot);
             tick.start_whine = true;
             return tick;
@@ -322,7 +291,7 @@ fn step_charge(bot: &mut ZapBot, mut dt: f32, in_range: bool) -> ChargeTick {
         };
     }
     bot.charge += dt;
-    if bot.charge >= units(ZAP_JOLT.charge) {
+    if bot.charge >= jolt().charge.as_secs_f32() {
         return finish_charge(bot);
     }
     ChargeTick {
@@ -334,7 +303,7 @@ fn step_charge(bot: &mut ZapBot, mut dt: f32, in_range: bool) -> ChargeTick {
 fn finish_charge(bot: &mut ZapBot) -> ChargeTick {
     bot.charge = 0.0;
     bot.voiced = false;
-    bot.rest = units(ZAP_JOLT.rest);
+    bot.rest = jolt().rest.as_secs_f32();
     bot.flash = 1.0;
     ChargeTick {
         start_whine: false,
@@ -365,13 +334,14 @@ fn bolt_origin(position: Vec3, aim: Vec3, radius: f32) -> Vec3 {
 }
 
 fn spawn_bolt(commands: &mut Commands, visuals: &Visuals, owner: Entity, origin: Vec3, aim: Vec3) {
-    let speed = units(ZAP_JOLT.bolt_speed);
+    let weapon = jolt();
+    let speed = weapon.bolt_speed;
     let bolt = commands
         .spawn((
             Projectile {
                 direction: aim,
                 speed,
-                radius: units(ZAP_JOLT.bolt_radius),
+                radius: weapon.bolt_radius,
                 previous: origin,
                 spent: false,
                 faction: Faction::Enemy,
@@ -379,8 +349,8 @@ fn spawn_bolt(commands: &mut Commands, visuals: &Visuals, owner: Entity, origin:
                 delivery: Delivery::Energy,
                 owner,
             },
-            Damage(ZAP_JOLT.damage),
-            Lifetime(units(ZAP_JOLT.reach) / speed),
+            Damage(weapon.damage),
+            Lifetime(weapon.reach / speed),
             Transform::from_translation(origin)
                 .with_rotation(Quat::from_rotation_y(aim.x.atan2(aim.z))),
             GlobalTransform::default(),
@@ -593,7 +563,7 @@ mod tests {
         }
         let elapsed = steps as f32 * 0.05;
         assert!(
-            (elapsed - units(ZAP_JOLT.charge)).abs() < 0.051,
+            (elapsed - jolt().charge.as_secs_f32()).abs() < 0.051,
             "discharged after {elapsed}s"
         );
         assert!(bot.rest > 0.0);
@@ -652,7 +622,7 @@ mod tests {
     #[test]
     fn bolt_range_is_measured_on_the_ground() {
         let cow = Vec3::new(0.0, 0.46, 0.0);
-        let reach = units(ZAP_JOLT.reach);
+        let reach = jolt().reach;
         assert!(player_in_bolt_range(cow, &[Vec3::new(0.0, 5.0, reach)]));
         assert!(!player_in_bolt_range(
             cow,
@@ -692,7 +662,7 @@ mod tests {
         }
         let elapsed = steps as f32 * 0.05;
         assert!(
-            (elapsed - units(ZAP_JOLT.charge)).abs() < 0.051,
+            (elapsed - jolt().charge.as_secs_f32()).abs() < 0.051,
             "discharged after {elapsed}s"
         );
     }
@@ -720,7 +690,7 @@ mod tests {
     #[test]
     fn a_cow_backs_up_without_dropping_its_charge() {
         let mut bot = sample_bot();
-        bot.drift.backing = units(behavior::UNSTICK.reverse);
+        bot.drift.backing = behavior::UNSTICK.reverse;
         bot.drift.attempt = Vec2::new(0.0, 1.0);
         let mut app = App::new();
         app.insert_resource(Session::default())
@@ -777,7 +747,7 @@ mod tests {
     fn nearly_charged() -> ZapBot {
         let mut bot = sample_bot();
         bot.voiced = true;
-        bot.charge = units(ZAP_JOLT.charge) - 0.02;
+        bot.charge = jolt().charge.as_secs_f32() - 0.02;
         bot
     }
 
@@ -903,7 +873,7 @@ mod tests {
     }
 
     fn assert_bolt_faces_its_shot(fired: &FiredBolt) {
-        assert_eq!(fired.damage, ZAP_JOLT.damage);
+        assert_eq!(fired.damage, jolt().damage);
         let along = fired.rotation * Vec3::Z;
         assert!(
             along.dot(fired.direction) > 0.999,
@@ -936,7 +906,7 @@ mod tests {
             Camera::default(),
             Transform::from_xyz(0.0, camera::CAMERA_HEIGHT, camera::CAMERA_BACK_OFFSET),
         ));
-        let height = units(ZAP_HULL.height);
+        let height = cow().height();
         let gone = app
             .world_mut()
             .spawn((
@@ -966,7 +936,7 @@ mod tests {
 
     fn sample_bot() -> ZapBot {
         ZapBot {
-            radius: units(ZAP_HULL.radius),
+            radius: cow().radius(),
             lane: 0.0,
             side: 1.0,
             drift: Drift::default(),

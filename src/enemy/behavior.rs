@@ -2,149 +2,49 @@
 
 use bevy::{prelude::*, window::PrimaryWindow};
 
-use super::{AttackPhase, Cover, Enemy, EnemyKind, EnemyReward, EnemyState, Hull, Pace, Tactic};
+use std::time::Duration;
+
+use super::{AttackPhase, Cover, Enemy, EnemyKind, EnemyReward, EnemyState, Tactic};
 use crate::audio::{self, SoundBank};
+use crate::character::RifleSpec;
 use crate::combat::{self, Damage, Delivery, Faction, Lifetime, Material, Projectile};
 use crate::player::{MovementSpeed, Player};
 use crate::session::{Phase, Session};
-use crate::units::units;
 use crate::world::camera::{self, FollowCamera};
 use crate::world::route::{self, Boulder};
 use crate::world::visuals::Visuals;
 
-/// The metal round every rifle squad fires.
-///
-/// Speed and radius are units. 1000 units is 1 metre per second, and 1 metre.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Round {
-    pub speed: u32,
-    pub radius: u32,
+fn rifle_of(kind: Option<EnemyKind>) -> RifleSpec {
+    *kind.unwrap_or(EnemyKind::Trooper).definition().rifle()
 }
-
-pub(crate) const RIFLE_ROUND: Round = Round {
-    speed: 13_000,
-    radius: 170,
-};
-
-/// One rifle: how hard it hits and how long it takes to load again.
-/// The cartridge is shared. Reload is units. 1000 units is 1 second.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Rifle {
-    pub damage: u32,
-    pub reload: u32,
-    pub round: Round,
-}
-
-/// A gunner is a hull, a pace, and a rifle. Nothing else is filled in.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Gunner {
-    pub hull: Hull,
-    pub pace: Pace,
-    pub rifle: Rifle,
-}
-
-pub(crate) const SCOUT: Gunner = Gunner {
-    hull: Hull {
-        health: 3,
-        reward: 1,
-        radius: 440,
-        height: 540,
-        visual_scale: 0.80,
-    },
-    pace: Pace { speed: 3_700 },
-    rifle: Rifle {
-        damage: 150,
-        reload: 1_150,
-        round: RIFLE_ROUND,
-    },
-};
-
-pub(crate) const TROOPER: Gunner = Gunner {
-    hull: Hull {
-        health: 6,
-        reward: 2,
-        radius: 560,
-        height: 680,
-        visual_scale: 1.0,
-    },
-    pace: Pace { speed: 3_000 },
-    rifle: Rifle {
-        damage: 200,
-        reload: 1_550,
-        round: RIFLE_ROUND,
-    },
-};
-
-pub(crate) const HEAVY: Gunner = Gunner {
-    hull: Hull {
-        health: 15,
-        reward: 4,
-        radius: 730,
-        height: 830,
-        visual_scale: 1.22,
-    },
-    pace: Pace { speed: 2_100 },
-    rifle: Rifle {
-        damage: 300,
-        reload: 1_950,
-        round: RIFLE_ROUND,
-    },
-};
-
-pub(crate) fn gunner(kind: EnemyKind) -> &'static Gunner {
-    match kind {
-        EnemyKind::Scout => &SCOUT,
-        EnemyKind::Heavy => &HEAVY,
-        EnemyKind::Trooper | EnemyKind::ZapBot | EnemyKind::Grenadier => &TROOPER,
-    }
-}
-
-pub(crate) fn rifle(kind: EnemyKind) -> Rifle {
-    gunner(kind).rifle
-}
-
-/// How far a rifle squad looks, and how many shots it fires before loading.
-/// Sight is units. 1000 units is 1 metre.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct RifleDrill {
-    pub sight: u32,
-    pub burst: u8,
-}
-
-pub(crate) const RIFLE_DRILL: RifleDrill = RifleDrill {
-    sight: 33_000,
-    burst: 3,
-};
 
 /// Cover approach and the fall back.
 /// Entry and exit are plain factors on the pace.
-/// Retreat speed and duration are units. 1000 units is 1 metre per second, and 1 second.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct CoverGait {
     pub entry: f32,
     pub exit: f32,
-    pub retreat_speed: u32,
-    pub retreat_for: u32,
+    pub retreat_speed: f32,
+    pub retreat_for: Duration,
 }
 
 pub(crate) const COVER_GAIT: CoverGait = CoverGait {
     entry: 1.5,
     exit: 1.5,
-    retreat_speed: 6_000,
-    retreat_for: 3_500,
+    retreat_speed: 6.0,
+    retreat_for: Duration::from_millis(3_500),
 };
 
 /// Shared backup when a walker or a cow stops making progress.
-/// Stall and reverse are units. 1000 units is 1 second, and 1 metre.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Unstick {
-    pub stall: u32,
-    pub reverse: u32,
+    pub stall: Duration,
+    pub reverse: f32,
 }
 
 pub(crate) const UNSTICK: Unstick = Unstick {
-    stall: 100,
-    reverse: 1_200,
+    stall: Duration::from_millis(100),
+    reverse: 1.2,
 };
 
 #[derive(Component)]
@@ -227,7 +127,7 @@ pub fn note_drift(drift: &mut Drift, moved: Vec2, dt: f32) -> bool {
         drift.backing = (drift.backing - gained).max(0.0);
         if gained < progress_quota(drift.step) {
             drift.stalled += dt;
-            if drift.stalled >= units(UNSTICK.stall) {
+            if drift.stalled >= UNSTICK.stall.as_secs_f32() {
                 drift.backing = 0.0;
                 drift.stalled = 0.0;
             }
@@ -246,9 +146,9 @@ pub fn note_drift(drift: &mut Drift, moved: Vec2, dt: f32) -> bool {
     drift.attempt = heading;
     if moved.dot(heading) < progress_quota(drift.step) {
         drift.stalled += dt;
-        if drift.stalled >= units(UNSTICK.stall) {
+        if drift.stalled >= UNSTICK.stall.as_secs_f32() {
             drift.stalled = 0.0;
-            drift.backing = units(UNSTICK.reverse);
+            drift.backing = UNSTICK.reverse;
             return true;
         }
     } else {
@@ -275,6 +175,7 @@ pub fn move_enemies(
             &mut Enemy,
             &MovementSpeed,
             Option<&mut Retreating>,
+            Option<&EnemyReward>,
         ),
         (With<Enemy>, Without<Player>),
     >,
@@ -283,7 +184,8 @@ pub fn move_enemies(
         return;
     }
     let dt = time.delta_secs();
-    for (mut transform, mut enemy, speed, retreating) in &mut enemies {
+    for (mut transform, mut enemy, speed, retreating, reward) in &mut enemies {
+        let rifle = rifle_of(reward.map(|reward| reward.kind));
         let position = transform.translation;
         let target_player = players.iter().min_by(|a, b| {
             a.translation
@@ -375,10 +277,8 @@ pub fn move_enemies(
                     {
                         enemy.evade_direction *= -1.0;
                     }
-                } else if distance > units(RIFLE_DRILL.sight)
-                    || distance > 5.5
-                        && enemy.fire_timer > 0.0
-                        && enemy.shots_left == RIFLE_DRILL.burst
+                } else if distance > rifle.sight
+                    || distance > 5.5 && enemy.fire_timer > 0.0 && enemy.shots_left == rifle.burst
                 {
                     let direction = match enemy.tactic {
                         Tactic::Direct => horizontal.normalize_or_zero(),
@@ -403,7 +303,7 @@ pub fn move_enemies(
                     retreat.remaining -= dt;
                     transform.scale.y = 1.0;
                     transform.translation.y = enemy.height;
-                    let max_step = units(COVER_GAIT.retreat_speed) * dt;
+                    let max_step = COVER_GAIT.retreat_speed * dt;
                     travel(
                         &mut transform,
                         &mut enemy,
@@ -560,6 +460,7 @@ pub fn shoot_enemies(
         positions.push((entity, transform.translation, enemy.radius));
     }
     for (entity, mut transform, mut enemy, reward) in enemy_queries.p1().iter_mut() {
+        let rifle = rifle_of(reward.map(|reward| reward.kind));
         if enemy.state == EnemyState::Retreating {
             continue;
         }
@@ -567,7 +468,7 @@ pub fn shoot_enemies(
             enemy.fire_timer -= time.delta_secs();
             if enemy.fire_timer <= 0.0 {
                 enemy.attack_phase = AttackPhase::Burst;
-                enemy.shots_left = RIFLE_DRILL.burst;
+                enemy.shots_left = rifle.burst;
                 enemy.fire_timer = 0.1;
             }
             continue;
@@ -583,8 +484,7 @@ pub fn shoot_enemies(
         let destination = Vec3::new(player.translation.x, 0.75, player.translation.z);
         let direction = (destination - origin).normalize_or_zero();
         if direction == Vec3::ZERO
-            || origin.distance_squared(destination)
-                > units(RIFLE_DRILL.sight) * units(RIFLE_DRILL.sight)
+            || origin.distance_squared(destination) > rifle.sight * rifle.sight
         {
             if enemy.state == EnemyState::Advancing {
                 enemy.sight_blocked = false;
@@ -614,7 +514,7 @@ pub fn shoot_enemies(
             // cover. The first shot happens this frame.
             enemy.state = EnemyState::Advancing;
             enemy.attack_phase = AttackPhase::Burst;
-            enemy.shots_left = RIFLE_DRILL.burst;
+            enemy.shots_left = rifle.burst;
             enemy.fire_timer = 0.0;
             transform.scale.y = 1.0;
             transform.translation.y = enemy.height;
@@ -630,16 +530,11 @@ pub fn shoot_enemies(
         if enemy.fire_timer > 0.0 {
             continue;
         }
-        let weapon = rifle(
-            reward
-                .map(|reward| reward.kind)
-                .unwrap_or(EnemyKind::Trooper),
-        );
         commands.spawn((
             Projectile {
                 direction,
-                speed: units(weapon.round.speed),
-                radius: units(weapon.round.radius),
+                speed: rifle.round_speed,
+                radius: rifle.round_radius,
                 previous: start,
                 spent: false,
                 faction: Faction::Enemy,
@@ -647,14 +542,14 @@ pub fn shoot_enemies(
                 delivery: Delivery::Kinetic,
                 owner: entity,
             },
-            Damage(weapon.damage),
+            Damage(rifle.damage),
             Lifetime(2.5),
             Mesh3d(visuals.bullet_mesh.clone()),
             MeshMaterial3d(visuals.enemy_bullet_material.clone()),
             Transform::from_translation(start),
         ));
         let volume = (0.26 - origin.distance(destination) * 0.004).clamp(0.08, 0.26);
-        let speed = 0.94 + (RIFLE_DRILL.burst - enemy.shots_left) as f32 * 0.04;
+        let speed = 0.94 + (rifle.burst - enemy.shots_left) as f32 * 0.04;
         audio::play_game(&mut commands, sounds.enemy_shot(), volume, speed);
         enemy.engaged = true;
         enemy.shots_left -= 1;
@@ -718,7 +613,7 @@ pub fn cleanup_behind_camera(
             commands.entity(entity).insert(Retreating {
                 side,
                 rear_z: enemy_cutoff - 1.0,
-                remaining: units(COVER_GAIT.retreat_for),
+                remaining: COVER_GAIT.retreat_for.as_secs_f32(),
             });
             removed.push(entity);
         }
@@ -842,7 +737,7 @@ mod tests {
                 Retreating {
                     side: 1.0,
                     rear_z: 8.0,
-                    remaining: units(COVER_GAIT.retreat_for),
+                    remaining: COVER_GAIT.retreat_for.as_secs_f32(),
                 },
                 MovementSpeed(3.0),
                 Transform::from_xyz(0.0, 0.68, 8.0),
@@ -870,7 +765,7 @@ mod tests {
             hold_timer: 0.0,
             fire_timer: 0.8,
             attack_phase: AttackPhase::Burst,
-            shots_left: RIFLE_DRILL.burst,
+            shots_left: crate::character::trooper().rifle().burst,
             evade_direction: 1.0,
             sight_blocked: false,
             reload_duration: 1.5,
@@ -916,7 +811,10 @@ mod tests {
 
         let flanker_state = app.world().get::<Enemy>(flanker).unwrap();
         assert_eq!(flanker_state.state, EnemyState::Advancing);
-        assert_eq!(flanker_state.shots_left, RIFLE_DRILL.burst - 1);
+        assert_eq!(
+            flanker_state.shots_left,
+            crate::character::trooper().rifle().burst - 1
+        );
         assert_eq!(
             app.world().get::<Enemy>(sheltered).unwrap().state,
             EnemyState::Holding
@@ -953,7 +851,7 @@ mod tests {
                     hold_timer: 0.0,
                     fire_timer: 0.0,
                     attack_phase: AttackPhase::Burst,
-                    shots_left: RIFLE_DRILL.burst,
+                    shots_left: crate::character::trooper().rifle().burst,
                     evade_direction: -1.0,
                     sight_blocked: false,
                     reload_duration: 1.5,
@@ -1012,7 +910,7 @@ mod tests {
         assert!(drift.backing == 0.0);
         drift.fresh = true;
         assert!(note_drift(&mut drift, Vec2::ZERO, 0.05));
-        assert_eq!(drift.backing, units(UNSTICK.reverse));
+        assert_eq!(drift.backing, UNSTICK.reverse);
         assert_eq!(drift.attempt, Vec2::new(0.0, 1.0));
         let back = reverse_step(&drift, 1.0, 0.4).unwrap();
         assert!(
@@ -1040,12 +938,12 @@ mod tests {
         let mut drift = Drift {
             fresh: true,
             trying: false,
-            backing: units(UNSTICK.reverse),
+            backing: UNSTICK.reverse,
             stalled: 0.05,
             ..Drift::default()
         };
         assert!(!note_drift(&mut drift, Vec2::ZERO, 0.2));
-        assert_eq!(drift.backing, units(UNSTICK.reverse));
+        assert_eq!(drift.backing, UNSTICK.reverse);
         assert_eq!(drift.stalled, 0.0);
     }
 
@@ -1102,7 +1000,7 @@ mod tests {
         );
 
         let mut standing = test_enemy(EnemyState::Advancing);
-        standing.drift.backing = units(UNSTICK.reverse);
+        standing.drift.backing = UNSTICK.reverse;
         standing.drift.attempt = Vec2::new(0.0, 1.0);
         standing.fire_timer = 0.0;
         let shooter = app
@@ -1127,7 +1025,7 @@ mod tests {
         );
         assert_eq!(
             app.world().get::<Enemy>(shooter).unwrap().drift.backing,
-            units(UNSTICK.reverse)
+            UNSTICK.reverse
         );
         assert!(
             app.world_mut()

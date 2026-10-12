@@ -101,9 +101,9 @@ while it is down, and step back before it lifts.
 
 Later bosses differ from that fight. The locked rule is the climb in danger, not one pattern repeated at a larger size.
 
-A spawned machine is a hull and a pace, plus the weapon it actually carries. Rifle squads carry a rifle.
-A zap-bot carries a jolt and a plate. A grenade walker carries a launcher and a shield. Those definitions
-use plain integers. 1000 units is 1 metre and 1 second. Cover entry and exit stay plain factors. A heavier weapon that also changes
+A spawned machine copies its body, movement, weapon, and abilities from `src/character.rs`. Rifle squads carry a rifle.
+A zap-bot carries a jolt and a plate. A grenade walker carries a launcher and a shield. Health, damage, and rewards
+stay integers. Distances and speeds use the same metres the world already moves in. Waits are `Duration`s. Cover entry and exit stay plain factors on the gunner's pace. A heavier weapon that also changes
 the pace is still to be built. The three gunners keep the behavior they have.
 
 Enemies do not yet react to ground hazards. A [Mage](players/mage.md) patch or a [Steamist](players/steamist.md) burst

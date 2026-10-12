@@ -52,7 +52,7 @@ The resulting `dist/entropy-turbine-windows.zip` is the file to send. The `share
 `src/main.rs` is the frame schedule. The rest of `src/` is grouped by what it owns:
 
 - `src/session.rs` stores the phase and the shared counters.
-- Player, rifle, jolt, and grenade-launcher numbers live with those capabilities. Hit points, speeds, radii, and timings are plain integers: 1000 units is 1 metre and 1 second. Factors, angles, and muzzle offsets stay floating-point. Runtime state stays on entities.
+- Character blueprints live in `src/character.rs`. Health, damage, and counts stay integers. Distances and speeds are metres and metres per second. Waits are `Duration`s. Factors stay plain decimals. Spawn copies a blueprint onto the entity, and runtime state stays there.
 - `src/startup.rs` builds the world and restarts after death.
 - `src/world/` draws the dirt route, follows the player with a forward-only camera, and keeps the shared meshes.
 - `src/player/` holds intent, movement, and firing. `input` writes `PlayerIntent` for the keyboard-controlled player; gameplay reads intent without reading devices. `animation` loads the model and turns the torso toward the mouse while firing. `ammo_hud` draws the two chamber rings.

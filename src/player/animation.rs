@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 
-use super::GUNSLINGER_PLAYER;
 use crate::player::{self, GunslingerWeapon, Player, PlayerIntent};
 use crate::session::{Phase, Session};
 
@@ -180,7 +179,7 @@ pub fn animate_characters(
                 .repeat();
         }
         let speed_factor = if shooting {
-            GUNSLINGER_PLAYER.shoot_move_factor
+            crate::character::gunslinger().shoot_move_factor()
         } else {
             1.0
         };

@@ -19,8 +19,8 @@ pub use encounter::{
 pub use grenadier::{Grenadier, VolleyPiece, fly_grenades, walk_grenadiers};
 pub use zap_bot::{ZapBot, drive_zap_bots, spawn_zap_bots};
 
-/// Which machine this is. The bounty is the one number the kind itself owns;
-/// health, pace, and weapons live with those capabilities.
+/// Which machine this is. Health, pace, and weapons live on its
+/// [`crate::character::CharacterDefinition`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnemyKind {
     Scout,
@@ -30,22 +30,16 @@ pub enum EnemyKind {
     Grenadier,
 }
 
-/// Health, size, bounty, and mesh scale.
-///
-/// `radius` and `height` are units. 1000 units is 1 metre. Scale is a factor.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Hull {
-    pub health: u32,
-    pub reward: u32,
-    pub radius: u32,
-    pub height: u32,
-    pub visual_scale: f32,
-}
-
-/// How fast a body walks, in units. 1000 units is 1 metre per second.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Pace {
-    pub speed: u32,
+impl EnemyKind {
+    pub fn definition(self) -> &'static crate::character::CharacterDefinition {
+        match self {
+            Self::Scout => crate::character::scout(),
+            Self::Trooper => crate::character::trooper(),
+            Self::Heavy => crate::character::heavy(),
+            Self::ZapBot => crate::character::zap_bot(),
+            Self::Grenadier => crate::character::grenadier(),
+        }
+    }
 }
 
 #[derive(Component)]
@@ -56,13 +50,7 @@ pub struct EnemyReward {
 
 impl EnemyReward {
     pub fn points(&self) -> u32 {
-        let bounty = match self.kind {
-            EnemyKind::Scout => behavior::SCOUT.hull.reward,
-            EnemyKind::Trooper => behavior::TROOPER.hull.reward,
-            EnemyKind::Heavy => behavior::HEAVY.hull.reward,
-            EnemyKind::ZapBot => zap_bot::ZAP_HULL.reward,
-            EnemyKind::Grenadier => grenadier::WALKER_HULL.reward,
-        };
+        let bounty = self.kind.definition().reward();
         bounty + u32::from(self.hit_player)
     }
 }
@@ -119,35 +107,32 @@ pub struct Cover {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn enemy_shot_damage_uses_player_health_scale() {
-        assert_eq!(behavior::SCOUT.rifle.damage, 150);
-        assert_eq!(behavior::TROOPER.rifle.damage, 200);
-        assert_eq!(behavior::HEAVY.rifle.damage, 300);
-        assert_eq!(behavior::RIFLE_ROUND.speed, 13_000);
-        assert_eq!(
-            behavior::SCOUT.rifle.round.speed,
-            behavior::RIFLE_ROUND.speed
-        );
-        assert_eq!(
-            behavior::TROOPER.rifle.round.speed,
-            behavior::RIFLE_ROUND.speed
-        );
-        assert_eq!(
-            behavior::HEAVY.rifle.round.speed,
-            behavior::RIFLE_ROUND.speed
-        );
-        assert_eq!(zap_bot::ZAP_HULL.health, 2);
-        let through = crate::player::GUNSLINGER_WEAPON.projectile_damage - zap_bot::ZAP_ARMOR;
+        use std::time::Duration;
+
+        let scout = crate::character::scout();
+        let trooper = crate::character::trooper();
+        let heavy = crate::character::heavy();
+        assert_eq!(scout.rifle().damage, 150);
+        assert_eq!(trooper.rifle().damage, 200);
+        assert_eq!(heavy.rifle().damage, 300);
+        assert_eq!(scout.rifle().round_speed, 13.0);
+        assert_eq!(trooper.rifle().round_speed, scout.rifle().round_speed);
+        assert_eq!(heavy.rifle().round_speed, scout.rifle().round_speed);
+        let zap = crate::character::zap_bot();
+        assert_eq!(zap.health(), 2);
+        let through = crate::character::gunslinger().revolver().projectile_damage
+            - zap.plate().expect("the cow wears a plate");
         assert!(through > 0, "the plate stays under the current shot");
         assert!(
-            through * 2 >= zap_bot::ZAP_HULL.health,
+            through * 2 >= zap.health(),
             "one paired hit still drops a cow"
         );
-        assert_eq!(grenadier::WALKER_HULL.health, 4);
-        assert_eq!(grenadier::WALKER_SHIELD, 4);
-        assert_eq!(grenadier::WALKER_SHIELD_DOWN, 4_000);
+        let walker = crate::character::grenadier();
+        assert_eq!(walker.health(), 4);
+        let (shield, down_for) = walker.shield().expect("the walker wears a shield");
+        assert_eq!(shield, 4);
+        assert_eq!(down_for, Duration::from_secs(4));
     }
 }

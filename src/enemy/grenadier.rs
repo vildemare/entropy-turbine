@@ -11,65 +11,28 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
-use super::{Cover, EnemyKind, EnemyReward, Hull, Pace};
+use super::{Cover, EnemyKind, EnemyReward};
 use crate::ability::Struck;
 use crate::audio::{self, SoundBank};
-use crate::combat::{Abilities, Delivery, EnergyShield, Faction, Health, HitCircle, Material};
+use crate::character::{CharacterDefinition, LauncherSpec};
+use crate::combat::{Delivery, EnergyShield, Faction, Health, HitCircle, Material};
 use crate::player::Player;
 use crate::session::{Phase, Session};
-use crate::units::units;
 use crate::world::camera::{self, FollowCamera};
 use crate::world::route;
 use crate::world::visuals::Visuals;
 
-pub(crate) const WALKER_HULL: Hull = Hull {
-    health: 4,
-    reward: 3,
-    radius: 1_350,
-    height: 950,
-    visual_scale: 1.35,
-};
-
-pub(crate) const WALKER_PACE: Pace = Pace { speed: 2_300 };
-
-/// Extra gap kept between the feet and a barricade, so the turn happens as
-/// the walker meets the obstacle. Units: 1000 units is 1 metre.
-pub(crate) const WALKER_CLEARANCE: u32 = 400;
-
-pub(crate) const WALKER_SHIELD: u32 = 4;
-/// How long the shield stays down, in units. 1000 units is 1 second.
-pub(crate) const WALKER_SHIELD_DOWN: u32 = 4_000;
-
-/// The four-tube launcher. The pattern, the flight, and the blast belong to it.
-/// Lengths and times are units. 1000 units is 1 metre and 1 second.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Launcher {
-    pub engage: u32,
-    pub aim: u32,
-    pub count: u8,
-    pub reload_each: u32,
-    pub blast_radius: u32,
-    pub blast_damage: u32,
-    pub flight: u32,
-    pub spread_min: u32,
-    pub spread_max: u32,
-    pub separation: u32,
-    pub arc_peak: u32,
+fn blueprint() -> &'static CharacterDefinition {
+    crate::character::grenadier()
 }
 
-pub(crate) const GRENADE_LAUNCHER: Launcher = Launcher {
-    engage: 16_000,
-    aim: 2_000,
-    count: 4,
-    reload_each: 1_000,
-    blast_radius: 2_000,
-    blast_damage: 80,
-    flight: 900,
-    spread_min: 1_250,
-    spread_max: 2_350,
-    separation: 1_350,
-    arc_peak: 4_000,
-};
+fn launcher() -> &'static LauncherSpec {
+    blueprint().launcher()
+}
+
+/// Extra gap kept between the feet and a barricade, so the turn happens as
+/// the walker meets the obstacle.
+pub(crate) const WALKER_CLEARANCE: f32 = 0.4;
 
 #[derive(Component)]
 pub struct Grenadier {
@@ -123,12 +86,13 @@ pub(crate) fn spawn(
     side: f32,
     rng: u32,
 ) {
-    let hull = WALKER_HULL;
+    let hull = blueprint();
+    let (shield, down_for) = hull.shield().expect("grenadier has a shield");
     let heading = Vec2::new(side * 0.65, 1.0).normalize();
     let actor = commands
         .spawn((
             Grenadier {
-                radius: units(hull.radius),
+                radius: hull.radius(),
                 heading,
                 gait: Gait::Walking,
                 rng: rng | 1,
@@ -137,11 +101,11 @@ pub(crate) fn spawn(
                 kind: EnemyKind::Grenadier,
                 hit_player: false,
             },
-            Health(hull.health),
-            EnergyShield::full(WALKER_SHIELD, units(WALKER_SHIELD_DOWN)),
-            Abilities::shielded(),
+            Health(hull.health()),
+            EnergyShield::full(shield, down_for.as_secs_f32()),
+            hull.runtime_abilities(),
             HitCircle {
-                radius: units(hull.radius),
+                radius: hull.radius(),
                 faction: Faction::Enemy,
                 swell: true,
             },
@@ -151,7 +115,7 @@ pub(crate) fn spawn(
             Visibility::default(),
         ))
         .id();
-    spawn_visual(commands, visuals, actor, hull.visual_scale);
+    spawn_visual(commands, visuals, actor, hull.visual_scale());
 }
 
 pub fn walk_grenadiers(
@@ -231,10 +195,11 @@ pub fn fly_grenades(
     }
     for (entity, mut transform, mut lob) in &mut lobs {
         lob.age += dt;
-        let flight = units(GRENADE_LAUNCHER.flight);
+        let weapon = launcher();
+        let flight = weapon.flight.as_secs_f32();
         let t = (lob.age / flight).clamp(0.0, 1.0);
         let flat = lob.origin.lerp(lob.target, t);
-        let height = 4.0 * units(GRENADE_LAUNCHER.arc_peak) * t * (1.0 - t);
+        let height = 4.0 * weapon.arc_peak * t * (1.0 - t);
         transform.translation = Vec3::new(flat.x, lob.target.y + 0.35 + height, flat.z);
         if lob.age < flight {
             continue;
@@ -277,11 +242,8 @@ fn sting(
         return;
     }
     let distance = Vec2::new(position.x - center.x, position.z - center.z).length();
-    let damage = blast_damage(
-        distance,
-        units(GRENADE_LAUNCHER.blast_radius),
-        GRENADE_LAUNCHER.blast_damage,
-    );
+    let weapon = launcher();
+    let damage = blast_damage(distance, weapon.blast_radius, weapon.blast_damage);
     if damage == 0 {
         return;
     }
@@ -322,7 +284,8 @@ fn advance(
     if matches!(walker.gait, Gait::Walking)
         && nearest.is_some_and(|player| in_reach(position, player))
     {
-        walker.gait = Gait::Aiming(units(GRENADE_LAUNCHER.aim));
+        let weapon = launcher();
+        walker.gait = Gait::Aiming(weapon.aim.as_secs_f32());
     }
     if let Gait::Aiming(timer) = walker.gait {
         let face = nearest
@@ -330,15 +293,14 @@ fn advance(
             .unwrap_or(walker.heading);
         let timer = timer - dt;
         if timer <= 0.0 {
+            let weapon = launcher();
             let aim = nearest.unwrap_or_else(|| {
                 position
-                    + Vec3::new(walker.heading.x, 0.0, walker.heading.y)
-                        * (units(GRENADE_LAUNCHER.engage) * 0.65)
+                    + Vec3::new(walker.heading.x, 0.0, walker.heading.y) * (weapon.engage * 0.65)
             });
             let spots = dispersion(aim, aim - position, &mut walker.rng);
-            walker.gait = Gait::Reloading(units(
-                u32::from(GRENADE_LAUNCHER.count) * GRENADE_LAUNCHER.reload_each,
-            ));
+            walker.gait =
+                Gait::Reloading((weapon.reload_each * u32::from(weapon.count)).as_secs_f32());
             return Advance {
                 position,
                 rotation: yaw(face),
@@ -353,7 +315,7 @@ fn advance(
         };
     }
 
-    let speed = units(WALKER_PACE.speed);
+    let speed = blueprint().speed();
     let distance = speed * dt;
     let step = Vec3::new(walker.heading.x, 0.0, walker.heading.y) * distance;
     let proposed = position + step;
@@ -367,7 +329,7 @@ fn advance(
         position = proposed;
     }
     position.x = route::clamp_actor_x(position.x, position.z, walker.radius);
-    position.y = units(WALKER_HULL.height);
+    position.y = blueprint().height();
     Advance {
         position,
         rotation: yaw(walker.heading),
@@ -376,6 +338,7 @@ fn advance(
 }
 
 fn dispersion(aim: Vec3, forward: Vec3, rng: &mut u32) -> [Vec3; 4] {
+    let weapon = launcher();
     let forward = flat_norm(forward);
     let side = Vec3::new(-forward.z, 0.0, forward.x);
     let mut offsets = [Vec3::ZERO; 4];
@@ -383,9 +346,7 @@ fn dispersion(aim: Vec3, forward: Vec3, rng: &mut u32) -> [Vec3; 4] {
     for (index, offset) in offsets.iter_mut().enumerate() {
         let jitter = (next_unit(rng) - 0.5) * 0.7;
         let angle = spin + index as f32 * std::f32::consts::FRAC_PI_2 + jitter;
-        let radius = units(GRENADE_LAUNCHER.spread_min)
-            + next_unit(rng)
-                * (units(GRENADE_LAUNCHER.spread_max) - units(GRENADE_LAUNCHER.spread_min));
+        let radius = weapon.spread_min + next_unit(rng) * (weapon.spread_max - weapon.spread_min);
         *offset = (forward * angle.cos() + side * angle.sin()) * radius;
     }
     for _ in 0..12 {
@@ -407,7 +368,8 @@ fn separate_pairs(offsets: &mut [Vec3; 4]) {
         for j in (i + 1)..4 {
             let delta = offsets[i] - offsets[j];
             let distance = delta.length();
-            if distance >= units(GRENADE_LAUNCHER.separation) {
+            let separation = launcher().separation;
+            if distance >= separation {
                 continue;
             }
             let push = if distance > 1.0e-4 {
@@ -415,7 +377,7 @@ fn separate_pairs(offsets: &mut [Vec3; 4]) {
             } else {
                 Vec3::X
             };
-            let gap = (units(GRENADE_LAUNCHER.separation) - distance) * 0.5;
+            let gap = (separation - distance) * 0.5;
             offsets[i] += push * gap;
             offsets[j] -= push * gap;
         }
@@ -429,7 +391,7 @@ fn nearest_player(position: Vec3, players: &[Vec3]) -> Option<Vec3> {
 }
 
 fn in_reach(position: Vec3, player: Vec3) -> bool {
-    let reach = units(GRENADE_LAUNCHER.engage);
+    let reach = launcher().engage;
     flat_distance_sq(position, player) <= reach * reach
 }
 
@@ -482,7 +444,7 @@ fn turn_away(heading: Vec2, from: Vec3, obstacle: Vec3) -> Vec2 {
 }
 
 fn blocked(position: Vec3, radius: f32, blocks: &[Block]) -> Option<Vec3> {
-    let reach = radius + units(WALKER_CLEARANCE);
+    let reach = radius + WALKER_CLEARANCE;
     for block in blocks {
         if overlaps(position, reach, block) {
             return Some(block.center);
@@ -552,7 +514,7 @@ fn spawn_throw(
         Mesh3d(visuals.blast_ring_mesh.clone()),
         MeshMaterial3d(visuals.blast_mark_material.clone()),
         Transform::from_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
-            .with_scale(Vec3::splat(units(GRENADE_LAUNCHER.blast_radius))),
+            .with_scale(Vec3::splat(launcher().blast_radius)),
         ChildOf(mark),
     ));
     for turn in [std::f32::consts::FRAC_PI_4, -std::f32::consts::FRAC_PI_4] {
@@ -643,7 +605,7 @@ mod tests {
 
     fn sample() -> Grenadier {
         Grenadier {
-            radius: units(WALKER_HULL.radius),
+            radius: blueprint().radius(),
             heading: Vec2::new(0.0, 1.0),
             gait: Gait::Walking,
             rng: 0x51ed_19ab,
@@ -670,7 +632,7 @@ mod tests {
             for other in spots.iter().skip(index + 1) {
                 let gap = Vec2::new(spot.x - other.x, spot.z - other.z).length();
                 assert!(
-                    gap + 0.05 >= units(GRENADE_LAUNCHER.separation),
+                    gap + 0.05 >= launcher().separation,
                     "grenades landed {gap} apart"
                 );
             }
@@ -689,7 +651,7 @@ mod tests {
     fn meeting_cover_turns_the_walker_ninety_degrees() {
         let mut walker = sample();
         let before = walker.heading;
-        let position = Vec3::new(0.0, units(WALKER_HULL.height), 0.0);
+        let position = Vec3::new(0.0, blueprint().height(), 0.0);
         let blocks = [Block {
             center: Vec3::new(0.0, 0.55, 3.0),
             half_width: 2.7,
@@ -712,7 +674,7 @@ mod tests {
     fn the_walker_holds_still_for_the_aim_then_throws_and_walks_the_reload() {
         let mut walker = sample();
         let players = [Vec3::new(2.0, 0.8, 8.0)];
-        let position = Vec3::new(0.0, units(WALKER_HULL.height), 0.0);
+        let position = Vec3::new(0.0, blueprint().height(), 0.0);
         let held = advance(&mut walker, position, &players, &[], 0.5);
         assert!(held.volley.is_none());
         assert_eq!(held.position, position);
@@ -761,7 +723,7 @@ mod tests {
             Lob {
                 origin: target + Vec3::new(0.0, 1.0, -8.0),
                 target,
-                age: units(GRENADE_LAUNCHER.flight) - 0.01,
+                age: launcher().flight.as_secs_f32() - 0.01,
                 owner,
                 mark,
             },
@@ -797,9 +759,9 @@ mod tests {
         for (target, age) in [
             (
                 Vec3::new(1.0, 0.0, 0.0),
-                units(GRENADE_LAUNCHER.flight) - 0.01,
+                launcher().flight.as_secs_f32() - 0.01,
             ),
-            (Vec3::ZERO, units(GRENADE_LAUNCHER.flight) - 0.01),
+            (Vec3::ZERO, launcher().flight.as_secs_f32() - 0.01),
         ] {
             let mark = app
                 .world_mut()

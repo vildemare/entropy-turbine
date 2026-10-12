@@ -10,8 +10,7 @@ use bevy::shader::ShaderRef;
 
 use crate::ability::EnergyShield;
 use crate::enemy::{Enemy, Grenadier, ZapBot};
-use crate::player::{GUNSLINGER_PLAYER, Player};
-use crate::units::units;
+use crate::player::Player;
 
 const SHADER: &str = "shaders/shield_shimmer.wgsl";
 
@@ -120,7 +119,7 @@ fn shell_radius(
         return grenadier.radius * 1.35;
     }
     if player {
-        return units(GUNSLINGER_PLAYER.hit_radius) * 1.8;
+        return crate::character::gunslinger().hit_radius() * 1.8;
     }
     0.9
 }

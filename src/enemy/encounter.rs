@@ -5,14 +5,12 @@ use std::collections::VecDeque;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
-use super::behavior::{self, RIFLE_DRILL};
-use super::grenadier::{self, WALKER_HULL};
+use super::grenadier;
 use super::zap_bot::ZAP_SCHEDULE;
 use super::{AttackPhase, Cover, Drift, Enemy, EnemyKind, EnemyReward, EnemyState, Tactic};
 use crate::combat::{Abilities, Faction, Health, HitCircle};
 use crate::player::MovementSpeed;
 use crate::session::{Phase, Session};
-use crate::units::units;
 use crate::world::camera::{self, FollowCamera};
 use crate::world::route;
 use crate::world::visuals::Visuals;
@@ -64,7 +62,7 @@ impl Default for EncounterDirector {
             group_number: 0,
             phase_number: 1,
             checkpoint_z: None,
-            zap_timer: units(ZAP_SCHEDULE.delay),
+            zap_timer: ZAP_SCHEDULE.delay.as_secs_f32(),
             random_state: 0x8b45_73cf,
         };
         director.prepare_phase(-23.0);
@@ -80,7 +78,7 @@ impl EncounterDirector {
             .unwrap_or(self.planned_checkpoint_z);
         self.phase_number += 1;
         self.group_number = 0;
-        self.zap_timer = units(ZAP_SCHEDULE.delay);
+        self.zap_timer = ZAP_SCHEDULE.delay.as_secs_f32();
         self.prepare_phase(checkpoint_z - 25.0);
     }
 
@@ -297,7 +295,8 @@ pub fn spawn_groups(
             } else {
                 EnemyKind::Trooper
             };
-            let gunner = behavior::gunner(kind);
+            let gunner = kind.definition();
+            let rifle = gunner.rifle();
             let slot_x = cover.translation.x + slot * 1.45;
             let start_x = match site.formation {
                 Formation::Row => slot_x,
@@ -314,7 +313,7 @@ pub fn spawn_groups(
             let flank_x = route::clamp_actor_x(
                 cover.translation.x + side * 4.3,
                 cover.translation.z,
-                units(gunner.hull.radius),
+                gunner.radius(),
             );
             let enemy_entity = commands
                 .spawn((
@@ -327,24 +326,24 @@ pub fn spawn_groups(
                         } else {
                             Tactic::Direct
                         },
-                        radius: units(gunner.hull.radius),
-                        height: units(gunner.hull.height),
+                        radius: gunner.radius(),
+                        height: gunner.height(),
                         cover_z: cover.translation.z,
                         slot_x,
                         flank_x,
                         hold_timer: 0.45 + director.random() * 0.45,
                         fire_timer: 0.2 + director.random() * 0.75,
                         attack_phase: AttackPhase::Burst,
-                        shots_left: RIFLE_DRILL.burst,
+                        shots_left: rifle.burst,
                         evade_direction: side,
                         sight_blocked: false,
-                        reload_duration: units(gunner.rifle.reload),
+                        reload_duration: rifle.reload.as_secs_f32(),
                         drift: Drift::default(),
                     },
-                    Health(gunner.hull.health),
-                    Abilities::enemy(),
+                    Health(gunner.health()),
+                    gunner.runtime_abilities(),
                     HitCircle {
-                        radius: units(gunner.hull.radius),
+                        radius: gunner.radius(),
                         faction: Faction::Enemy,
                         swell: true,
                     },
@@ -352,11 +351,11 @@ pub fn spawn_groups(
                         kind,
                         hit_player: false,
                     },
-                    MovementSpeed(units(gunner.pace.speed)),
+                    MovementSpeed(gunner.speed()),
                     Transform::from_xyz(
                         start_x + route::centerline_x(start_z)
                             - route::centerline_x(cover.translation.z),
-                        units(gunner.hull.height),
+                        gunner.height(),
                         start_z,
                     ),
                     GlobalTransform::default(),
@@ -368,16 +367,13 @@ pub fn spawn_groups(
         if site.grenadier {
             let side = if director.random() < 0.5 { -1.0 } else { 1.0 };
             let z = cover.translation.z - 8.0;
-            let x = route::clamp_actor_x(
-                cover.translation.x + side * 6.5,
-                z,
-                units(WALKER_HULL.radius),
-            );
+            let walker = crate::character::grenadier();
+            let x = route::clamp_actor_x(cover.translation.x + side * 6.5, z, walker.radius());
             let seed = site.group_id.wrapping_mul(0x9e37_79b9) | 1;
             grenadier::spawn(
                 &mut commands,
                 &visuals,
-                Vec3::new(x, units(WALKER_HULL.height), z),
+                Vec3::new(x, walker.height(), z),
                 side,
                 seed,
             );
@@ -426,7 +422,8 @@ pub fn spawn_reinforcements(
             } else {
                 EnemyKind::Scout
             };
-            let gunner = behavior::gunner(kind);
+            let gunner = kind.definition();
+            let rifle = gunner.rifle();
             let side = if index % 2 == 0 { -1.0 } else { 1.0 };
             let x = route::centerline_x(z) + center_x + (index as f32 - 1.0) * 2.0;
             let actor = commands
@@ -440,24 +437,24 @@ pub fn spawn_reinforcements(
                         } else {
                             Tactic::Straight
                         },
-                        radius: units(gunner.hull.radius),
-                        height: units(gunner.hull.height),
+                        radius: gunner.radius(),
+                        height: gunner.height(),
                         cover_z: z,
                         slot_x: x,
                         flank_x: x,
                         hold_timer: 0.0,
                         fire_timer: 0.35 + director.random() * 0.6,
                         attack_phase: AttackPhase::Burst,
-                        shots_left: RIFLE_DRILL.burst,
+                        shots_left: rifle.burst,
                         evade_direction: side,
                         sight_blocked: false,
-                        reload_duration: units(gunner.rifle.reload),
+                        reload_duration: rifle.reload.as_secs_f32(),
                         drift: Drift::default(),
                     },
-                    Health(gunner.hull.health),
-                    Abilities::enemy(),
+                    Health(gunner.health()),
+                    gunner.runtime_abilities(),
                     HitCircle {
-                        radius: units(gunner.hull.radius),
+                        radius: gunner.radius(),
                         faction: Faction::Enemy,
                         swell: true,
                     },
@@ -465,8 +462,8 @@ pub fn spawn_reinforcements(
                         kind,
                         hit_player: false,
                     },
-                    MovementSpeed(units(gunner.pace.speed)),
-                    Transform::from_xyz(x, units(gunner.hull.height), z),
+                    MovementSpeed(gunner.speed()),
+                    Transform::from_xyz(x, gunner.height(), z),
                     GlobalTransform::default(),
                     Visibility::default(),
                 ))
@@ -477,13 +474,13 @@ pub fn spawn_reinforcements(
 }
 
 fn spawn_enemy_visual(commands: &mut Commands, visuals: &Visuals, actor: Entity, kind: EnemyKind) {
-    let size = behavior::gunner(kind).hull.visual_scale;
     let coat = match kind {
         EnemyKind::Scout => &visuals.scout_material,
         EnemyKind::Trooper => &visuals.trooper_material,
         EnemyKind::Heavy => &visuals.heavy_material,
         EnemyKind::ZapBot | EnemyKind::Grenadier => return,
     };
+    let size = kind.definition().visual_scale();
     let iron = &visuals.enemy_iron_material;
     let brass = &visuals.enemy_brass_material;
     let visor = &visuals.enemy_visor_material;
@@ -885,7 +882,7 @@ mod tests {
                     hold_timer: 0.0,
                     fire_timer: 0.0,
                     attack_phase: AttackPhase::Burst,
-                    shots_left: RIFLE_DRILL.burst,
+                    shots_left: crate::character::trooper().rifle().burst,
                     evade_direction: 1.0,
                     sight_blocked: false,
                     reload_duration: 1.5,
