@@ -1,23 +1,25 @@
 //! Enemies and the cover they fight from.
 //!
-//! `encounter` decides when a wave exists. `behavior` decides how each enemy moves and what it can see. `rifle` owns the burst and the round.
+//! `encounter` decides when a wave exists. `gunner` is the scout, the trooper,
+//! and the heavy. `behavior` steps every machine and keeps bodies apart.
+//! `rifle` owns the burst and the round. The grenadier's launcher and the
+//! cow's jolt own their own shots.
 
 use bevy::prelude::*;
 
 mod behavior;
 mod encounter;
 mod grenadier;
+mod gunner;
 mod rifle;
 mod zap_bot;
 
-pub use behavior::{
-    Drift, apply_volleys, cleanup_behind_camera, move_enemies, separate_enemies,
-    separate_from_cover, shoot_enemies,
-};
+pub use behavior::{Drift, separate_enemies, separate_from_cover, walk_grenadiers};
 pub use encounter::{
     EncounterDirector, WAVES_PER_PHASE, place_covers, spawn_groups, spawn_reinforcements,
 };
-pub use grenadier::{Grenadier, VolleyPiece, fly_grenades, walk_grenadiers};
+pub use grenadier::{Grenadier, VolleyPiece, aim_grenadiers, fly_grenades};
+pub use gunner::{apply_volleys, cleanup_behind_camera, move_enemies, shoot_enemies};
 pub use rifle::{Rifle, RifleAim, RoundFired, fire_rifles};
 pub use zap_bot::{ZapBot, drive_zap_bots, spawn_zap_bots};
 

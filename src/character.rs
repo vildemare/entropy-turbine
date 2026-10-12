@@ -6,8 +6,9 @@
 //! draws with. Waits are [`Duration`]s. Health, damage, armor, shields,
 //! rewards, and counts stay integers.
 //!
-//! Cover gait, retreat, and the walker's path are still behavior. They read
-//! the blueprint and are not part of it yet.
+//! Cover gait and retreat live with the gunners. The walker's path and the
+//! cow's lane step live with the other locomotion. They read the blueprint
+//! and are not part of it yet.
 
 use std::sync::OnceLock;
 use std::time::Duration;

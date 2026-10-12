@@ -68,6 +68,7 @@ fn main() {
                 enemy::move_enemies,
                 enemy::separate_enemies,
                 enemy::drive_zap_bots,
+                enemy::aim_grenadiers,
                 enemy::walk_grenadiers,
             )
                 .chain()

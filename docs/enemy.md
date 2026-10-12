@@ -101,9 +101,9 @@ while it is down, and step back before it lifts.
 
 Later bosses differ from that fight. The locked rule is the climb in danger, not one pattern repeated at a larger size.
 
-A spawned machine copies its body, movement, weapon, and abilities from `src/character.rs`. Rifle squads carry a rifle. The behavior reports what the gunner can see, and the rifle spends the burst.
+A spawned machine copies its body, movement, weapon, and abilities from `src/character.rs`. Scout, trooper, and heavy live in `src/enemy/gunner.rs`, beside the zap-bot and the grenade walker. A gunner reports what it can see, and the rifle spends the burst.
 A zap-bot carries a jolt and a plate. A grenade walker carries a launcher and a shield. Health, damage, and rewards
-stay integers. Distances and speeds use the same metres the world already moves in. Waits are `Duration`s. Cover entry and exit stay plain factors on the gunner's pace. A heavier weapon that also changes
+stay integers. Distances and speeds use the same metres the world already moves in. Waits are `Duration`s. Cover entry and exit stay plain factors on the gunner's pace. The grenade walker's step and the cow's lane step live with the other locomotion in `src/enemy/behavior.rs`. The launcher owns the aim and the throw. The jolt owns the charge and the bolt. A heavier weapon that also changes
 the pace is still to be built. The three gunners keep the behavior they have.
 
 Enemies do not yet react to ground hazards. A [Mage](players/mage.md) patch or a [Steamist](players/steamist.md) burst

@@ -63,12 +63,6 @@ struct ChargeTick {
     discharge: bool,
 }
 
-struct Block {
-    center: Vec3,
-    half_width: f32,
-    half_depth: f32,
-}
-
 pub fn spawn_zap_bots(
     time: Res<Time>,
     session: Res<Session>,
@@ -101,9 +95,9 @@ pub fn spawn_zap_bots(
     let lane = director.random() * 1.6 - 0.8;
     let side = if director.random() < 0.5 { -1.0 } else { 1.0 };
     let mut x = route::clamp_actor_x(route::centerline_x(z) + lane * 8.0, z, hull.radius());
-    let blocks = cover_blocks(&covers);
+    let blocks = behavior::footprints(covers.iter());
     for _ in 0..5 {
-        if !blocked(Vec3::new(x, hull.height(), z), hull.radius(), &blocks) {
+        if !behavior::tracks_blocked(Vec3::new(x, hull.height(), z), hull.radius(), &blocks) {
             break;
         }
         x = route::clamp_actor_x(x + side * 2.4, z, hull.radius());
@@ -173,7 +167,7 @@ pub fn drive_zap_bots(
             camera::ground_z_at_viewport_fraction(camera, camera_transform, window, 0.92)
         })
         .unwrap_or(center_z + 15.0);
-    let blocks = cover_blocks(&covers);
+    let blocks = behavior::footprints(covers.iter());
     let player_positions: Vec<Vec3> = players
         .iter()
         .map(|transform| transform.translation)
@@ -189,7 +183,7 @@ pub fn drive_zap_bots(
         let lane_x = route::centerline_x(position.z + 6.0) + bot.lane * 7.0;
         let max_step = speed * dt;
         let (planned, chosen_side) =
-            choose_step(position, bot.radius, lane_x, bot.side, max_step, &blocks);
+            behavior::step_tracks(position, bot.radius, lane_x, bot.side, max_step, &blocks);
         // A cow keeps driving through the backup. It does not stand to shoot.
         bot.drift.from = position;
         bot.drift.fresh = true;
@@ -367,103 +361,6 @@ fn spawn_bolt(commands: &mut Commands, visuals: &Visuals, owner: Entity, origin:
     ));
 }
 
-fn choose_step(
-    position: Vec3,
-    radius: f32,
-    lane_x: f32,
-    side: f32,
-    distance: f32,
-    blocks: &[Block],
-) -> (Vec3, f32) {
-    let Some(block) = obstacle_ahead(position, radius, blocks) else {
-        let wander = (position.z * 0.45).sin() * 2.2;
-        let lateral = (lane_x + wander - position.x).clamp(-6.0, 6.0);
-        let forward = Vec3::new(lateral * 0.45, 0.0, 1.0).normalize();
-        return (position + forward * distance, side);
-    };
-    let preferred = clearer_side(position, block, radius, side);
-    for chosen in [preferred, -preferred] {
-        let pass_x = route::clamp_actor_x(
-            block.center.x + chosen * (block.half_width + radius + 1.1),
-            block.center.z,
-            radius,
-        );
-        let aim_z = (block.center.z - position.z).max(1.2);
-        let direction = Vec3::new(pass_x - position.x, 0.0, aim_z).normalize();
-        let next = position + direction * distance;
-        if !blocked(next, radius, blocks) {
-            return (next, chosen);
-        }
-    }
-    (position, -side)
-}
-
-/// The nearest cover the cow would clip if it kept its current line, looked up
-/// early enough that the side-step reads as a turn rather than a shove.
-fn obstacle_ahead<'a>(position: Vec3, radius: f32, blocks: &'a [Block]) -> Option<&'a Block> {
-    let look = 14.0;
-    let margin = radius + 1.4;
-    blocks
-        .iter()
-        .filter(|block| {
-            let front = block.center.z - block.half_depth;
-            let back = block.center.z + block.half_depth;
-            if back < position.z - 0.2 || front > position.z + look {
-                return false;
-            }
-            let left = block.center.x - block.half_width - margin;
-            let right = block.center.x + block.half_width + margin;
-            position.x > left && position.x < right
-        })
-        .min_by(|a, b| {
-            let da = a.center.z - a.half_depth - position.z;
-            let db = b.center.z - b.half_depth - position.z;
-            da.total_cmp(&db)
-        })
-}
-
-fn clearer_side(position: Vec3, block: &Block, radius: f32, prefer: f32) -> f32 {
-    let center = route::centerline_x(block.center.z);
-    let left_room = (block.center.x - block.half_width) - (center - route::ROAD_HALF_WIDTH);
-    let right_room = (center + route::ROAD_HALF_WIDTH) - (block.center.x + block.half_width);
-    let prefer_right = if (position.x - block.center.x).abs() > 0.4 {
-        position.x > block.center.x
-    } else {
-        prefer > 0.0
-    };
-    let prefer_room = if prefer_right { right_room } else { left_room };
-    if prefer_room > radius + 0.8 {
-        return if prefer_right { 1.0 } else { -1.0 };
-    }
-    if right_room >= left_room { 1.0 } else { -1.0 }
-}
-
-fn blocked(position: Vec3, radius: f32, blocks: &[Block]) -> bool {
-    blocks.iter().any(|block| {
-        let nearest_x = position.x.clamp(
-            block.center.x - block.half_width,
-            block.center.x + block.half_width,
-        );
-        let nearest_z = position.z.clamp(
-            block.center.z - block.half_depth,
-            block.center.z + block.half_depth,
-        );
-        let offset = Vec2::new(position.x - nearest_x, position.z - nearest_z);
-        offset.length_squared() < radius * radius
-    })
-}
-
-fn cover_blocks(covers: &Query<(&Transform, &Cover), Without<ZapBot>>) -> Vec<Block> {
-    covers
-        .iter()
-        .map(|(transform, cover)| Block {
-            center: transform.translation,
-            half_width: cover.half_width,
-            half_depth: cover.half_depth,
-        })
-        .collect()
-}
-
 fn spawn_visual(
     commands: &mut Commands,
     visuals: &Visuals,
@@ -506,10 +403,11 @@ fn spawn_visual(
 mod tests {
     use std::time::Duration;
 
+    use super::behavior::{self, Footprint};
     use super::*;
 
-    fn barricade(z: f32) -> Block {
-        Block {
+    fn barricade(z: f32) -> Footprint {
+        Footprint {
             center: Vec3::new(0.0, 0.0, z),
             half_width: 2.7,
             half_depth: 0.5,
@@ -518,7 +416,7 @@ mod tests {
 
     #[test]
     fn an_open_lane_carries_a_cow_downscreen() {
-        let (next, side) = choose_step(Vec3::ZERO, 0.9, 0.0, 1.0, 0.4, &[]);
+        let (next, side) = behavior::step_tracks(Vec3::ZERO, 0.9, 0.0, 1.0, 0.4, &[]);
         assert!(next.z > 0.2);
         assert_eq!(side, 1.0);
     }
@@ -527,19 +425,19 @@ mod tests {
     fn a_barricade_ahead_pushes_the_cow_to_one_side() {
         let blocks = [barricade(1.2)];
         let start = Vec3::new(0.0, 0.0, -0.5);
-        let (next, side) = choose_step(start, 0.9, 0.0, 1.0, 0.4, &blocks);
+        let (next, side) = behavior::step_tracks(start, 0.9, 0.0, 1.0, 0.4, &blocks);
         assert!(next.x.abs() > 0.05, "x {}", next.x);
         assert!(next.z > start.z);
         assert_eq!(side.abs(), 1.0);
-        assert!(!blocked(next, 0.9, &blocks));
+        assert!(!behavior::tracks_blocked(next, 0.9, &blocks));
     }
 
     #[test]
     fn a_cow_turns_out_several_metres_before_the_barricade() {
         let start = Vec3::new(0.0, 0.0, -6.0);
         let blocks = [barricade(0.0)];
-        let (straight, _) = choose_step(start, 0.9, 0.0, 1.0, 0.5, &[]);
-        let (next, side) = choose_step(start, 0.9, 0.0, 1.0, 0.5, &blocks);
+        let (straight, _) = behavior::step_tracks(start, 0.9, 0.0, 1.0, 0.5, &[]);
+        let (next, side) = behavior::step_tracks(start, 0.9, 0.0, 1.0, 0.5, &blocks);
         assert!(next.x.abs() > straight.x.abs() + 0.08, "x {}", next.x);
         assert!(next.z > start.z);
         assert_eq!(side.abs(), 1.0);

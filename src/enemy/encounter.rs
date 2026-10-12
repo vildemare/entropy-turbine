@@ -6,11 +6,10 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
 use super::grenadier;
-use super::rifle::Rifle;
+use super::gunner::{self, GunnerSpawn};
 use super::zap_bot::ZAP_SCHEDULE;
 use super::{Cover, Drift, Enemy, EnemyKind, EnemyReward, EnemyState, Tactic};
-use crate::combat::{Abilities, Faction, Health, HitCircle};
-use crate::player::MovementSpeed;
+use crate::combat::Abilities;
 use crate::session::{Phase, Session};
 use crate::world::camera::{self, FollowCamera};
 use crate::world::route;
@@ -297,7 +296,6 @@ pub fn spawn_groups(
                 EnemyKind::Trooper
             };
             let gunner = kind.definition();
-            let rifle = gunner.rifle();
             let slot_x = cover.translation.x + slot * 1.45;
             let start_x = match site.formation {
                 Formation::Row => slot_x,
@@ -316,51 +314,32 @@ pub fn spawn_groups(
                 cover.translation.z,
                 gunner.radius(),
             );
-            let enemy_entity = commands
-                .spawn((
-                    Enemy {
-                        group_id: site.group_id,
-                        engaged: false,
-                        state: EnemyState::Entering,
-                        tactic: if index % 2 == 0 {
-                            Tactic::Straight
-                        } else {
-                            Tactic::Direct
-                        },
-                        radius: gunner.radius(),
-                        height: gunner.height(),
-                        cover_z: cover.translation.z,
-                        slot_x,
-                        flank_x,
-                        hold_timer: 0.45 + director.random() * 0.45,
-                        evade_direction: side,
-                        sight_blocked: false,
-                        drift: Drift::default(),
+            gunner::spawn(
+                &mut commands,
+                &visuals,
+                kind,
+                GunnerSpawn {
+                    group_id: site.group_id,
+                    state: EnemyState::Entering,
+                    tactic: if index % 2 == 0 {
+                        Tactic::Straight
+                    } else {
+                        Tactic::Direct
                     },
-                    Rifle::from_spec(rifle, 0.2 + director.random() * 0.75),
-                    Health(gunner.health()),
-                    gunner.runtime_abilities(),
-                    HitCircle {
-                        radius: gunner.radius(),
-                        faction: Faction::Enemy,
-                        swell: true,
-                    },
-                    EnemyReward {
-                        kind,
-                        hit_player: false,
-                    },
-                    MovementSpeed(gunner.speed()),
-                    Transform::from_xyz(
+                    cover_z: cover.translation.z,
+                    slot_x,
+                    flank_x,
+                    hold_timer: 0.45 + director.random() * 0.45,
+                    side,
+                    opening: 0.2 + director.random() * 0.75,
+                    position: Vec3::new(
                         start_x + route::centerline_x(start_z)
                             - route::centerline_x(cover.translation.z),
                         gunner.height(),
                         start_z,
                     ),
-                    GlobalTransform::default(),
-                    Visibility::default(),
-                ))
-                .id();
-            spawn_enemy_visual(&mut commands, &visuals, enemy_entity, kind);
+                },
+            );
         }
         if site.grenadier {
             let side = if director.random() < 0.5 { -1.0 } else { 1.0 };
@@ -421,140 +400,30 @@ pub fn spawn_reinforcements(
                 EnemyKind::Scout
             };
             let gunner = kind.definition();
-            let rifle = gunner.rifle();
             let side = if index % 2 == 0 { -1.0 } else { 1.0 };
             let x = route::centerline_x(z) + center_x + (index as f32 - 1.0) * 2.0;
-            let actor = commands
-                .spawn((
-                    Enemy {
-                        group_id: site.group_id | 0x8000_0000,
-                        engaged: false,
-                        state: EnemyState::Advancing,
-                        tactic: if index == 1 {
-                            Tactic::Direct
-                        } else {
-                            Tactic::Straight
-                        },
-                        radius: gunner.radius(),
-                        height: gunner.height(),
-                        cover_z: z,
-                        slot_x: x,
-                        flank_x: x,
-                        hold_timer: 0.0,
-                        evade_direction: side,
-                        sight_blocked: false,
-                        drift: Drift::default(),
+            gunner::spawn(
+                &mut commands,
+                &visuals,
+                kind,
+                GunnerSpawn {
+                    group_id: site.group_id | 0x8000_0000,
+                    state: EnemyState::Advancing,
+                    tactic: if index == 1 {
+                        Tactic::Direct
+                    } else {
+                        Tactic::Straight
                     },
-                    Rifle::from_spec(rifle, 0.35 + director.random() * 0.6),
-                    Health(gunner.health()),
-                    gunner.runtime_abilities(),
-                    HitCircle {
-                        radius: gunner.radius(),
-                        faction: Faction::Enemy,
-                        swell: true,
-                    },
-                    EnemyReward {
-                        kind,
-                        hit_player: false,
-                    },
-                    MovementSpeed(gunner.speed()),
-                    Transform::from_xyz(x, gunner.height(), z),
-                    GlobalTransform::default(),
-                    Visibility::default(),
-                ))
-                .id();
-            spawn_enemy_visual(&mut commands, &visuals, actor, kind);
+                    cover_z: z,
+                    slot_x: x,
+                    flank_x: x,
+                    hold_timer: 0.0,
+                    side,
+                    opening: 0.35 + director.random() * 0.6,
+                    position: Vec3::new(x, gunner.height(), z),
+                },
+            );
         }
-    }
-}
-
-fn spawn_enemy_visual(commands: &mut Commands, visuals: &Visuals, actor: Entity, kind: EnemyKind) {
-    let coat = match kind {
-        EnemyKind::Scout => &visuals.scout_material,
-        EnemyKind::Trooper => &visuals.trooper_material,
-        EnemyKind::Heavy => &visuals.heavy_material,
-        EnemyKind::ZapBot | EnemyKind::Grenadier => return,
-    };
-    let size = kind.definition().visual_scale();
-    let iron = &visuals.enemy_iron_material;
-    let brass = &visuals.enemy_brass_material;
-    let visor = &visuals.enemy_visor_material;
-    let mut part = |material: &Handle<StandardMaterial>, position: Vec3, scale: Vec3| {
-        commands.spawn((
-            Mesh3d(visuals.enemy_part_mesh.clone()),
-            MeshMaterial3d(material.clone()),
-            Transform::from_translation(position * size).with_scale(scale * size),
-            ChildOf(actor),
-        ));
-    };
-    // Coat, split legs, iron boots, and a broad helmet make the role legible
-    // from the overhead camera. The brass tank and forward gun suggest machinery.
-    part(coat, Vec3::ZERO, Vec3::new(0.69, 0.72, 0.42));
-    for side in [-1.0, 1.0] {
-        part(
-            coat,
-            Vec3::new(side * 0.19, -0.53, 0.0),
-            Vec3::new(0.24, 0.62, 0.29),
-        );
-        part(
-            iron,
-            Vec3::new(side * 0.19, -0.77, 0.12),
-            Vec3::new(0.29, 0.22, 0.38),
-        );
-        part(
-            iron,
-            Vec3::new(side * 0.43, 0.16, 0.0),
-            Vec3::new(0.24, 0.27, 0.43),
-        );
-    }
-    part(coat, Vec3::new(0.0, 0.56, 0.0), Vec3::new(0.38, 0.36, 0.35));
-    part(
-        iron,
-        Vec3::new(0.0, 0.79, -0.02),
-        Vec3::new(0.55, 0.19, 0.5),
-    );
-    part(
-        brass,
-        Vec3::new(0.0, 0.76, 0.30),
-        Vec3::new(0.54, 0.06, 0.16),
-    );
-    part(
-        visor,
-        Vec3::new(0.0, 0.59, 0.24),
-        Vec3::new(0.28, 0.10, 0.07),
-    );
-    part(
-        brass,
-        Vec3::new(0.0, 0.06, -0.29),
-        Vec3::new(0.4, 0.56, 0.24),
-    );
-    part(
-        iron,
-        Vec3::new(0.0, -0.11, 0.25),
-        Vec3::new(0.55, 0.16, 0.17),
-    );
-    // Gun points along local +Z; the actor rotates toward its target.
-    part(
-        iron,
-        Vec3::new(0.48, 0.04, 0.40),
-        Vec3::new(0.19, 0.20, 0.86),
-    );
-    part(
-        brass,
-        Vec3::new(0.48, 0.04, 0.88),
-        Vec3::new(0.23, 0.24, 0.12),
-    );
-    if kind == EnemyKind::Heavy {
-        part(
-            brass,
-            Vec3::new(-0.31, 0.23, -0.29),
-            Vec3::new(0.18, 0.52, 0.23),
-        );
-        part(
-            brass,
-            Vec3::new(0.31, 0.23, -0.29),
-            Vec3::new(0.18, 0.52, 0.23),
-        );
     }
 }
 

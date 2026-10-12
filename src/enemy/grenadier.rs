@@ -1,17 +1,16 @@
 //! A wide-footed walker that lobs a sparse volley of grenades.
 //!
-//! It walks a diagonal down the road. Meeting cover or the road edge turns it
-//! ninety degrees away from that obstacle, and it keeps walking. A player
-//! inside its reach stops it: it turns toward that player, aims for two
-//! seconds, then throws four grenades around the aim point. The aim point is
-//! the center of the pattern. Reload is one second per grenade, and the walker
-//! moves during that reload. Each landing is a circle on the ground; damage
-//! falls off from the center to the rim.
+//! The step itself lives with the other locomotion. This launcher owns the
+//! aim and the throw. A player inside its reach stops the walker: it turns
+//! toward that player, aims for two seconds, then throws four grenades around
+//! the aim point. The aim point is the center of the pattern. Reload is one
+//! second per grenade, and the walker moves during that reload. Each landing
+//! is a circle on the ground; damage falls off from the center to the rim.
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
-use super::{Cover, EnemyKind, EnemyReward};
+use super::{EnemyKind, EnemyReward};
 use crate::ability::Struck;
 use crate::audio::{self, SoundBank};
 use crate::character::{CharacterDefinition, LauncherSpec};
@@ -19,7 +18,6 @@ use crate::combat::{Delivery, EnergyShield, Faction, Health, HitCircle, Material
 use crate::player::Player;
 use crate::session::{Phase, Session};
 use crate::world::camera::{self, FollowCamera};
-use crate::world::route;
 use crate::world::visuals::Visuals;
 
 fn blueprint() -> &'static CharacterDefinition {
@@ -30,16 +28,27 @@ fn launcher() -> &'static LauncherSpec {
     blueprint().launcher()
 }
 
-/// Extra gap kept between the feet and a barricade, so the turn happens as
-/// the walker meets the obstacle.
-pub(crate) const WALKER_CLEARANCE: f32 = 0.4;
-
 #[derive(Component)]
 pub struct Grenadier {
     pub radius: f32,
     heading: Vec2,
     gait: Gait,
+    hold: bool,
     rng: u32,
+}
+
+impl Grenadier {
+    pub(crate) fn holding(&self) -> bool {
+        self.hold
+    }
+
+    pub(crate) fn heading(&self) -> Vec2 {
+        self.heading
+    }
+
+    pub(crate) fn set_heading(&mut self, heading: Vec2) {
+        self.heading = heading;
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -49,15 +58,9 @@ enum Gait {
     Reloading(f32),
 }
 
-struct Block {
-    center: Vec3,
-    half_width: f32,
-    half_depth: f32,
-}
-
-struct Advance {
-    position: Vec3,
-    rotation: Quat,
+struct GaitTick {
+    hold: bool,
+    face: Vec2,
     volley: Option<[Vec3; 4]>,
 }
 
@@ -95,6 +98,7 @@ pub(crate) fn spawn(
                 radius: hull.radius(),
                 heading,
                 gait: Gait::Walking,
+                hold: false,
                 rng: rng | 1,
             },
             EnemyReward {
@@ -118,7 +122,7 @@ pub(crate) fn spawn(
     spawn_visual(commands, visuals, actor, hull.visual_scale());
 }
 
-pub fn walk_grenadiers(
+pub fn aim_grenadiers(
     time: Res<Time>,
     session: Res<Session>,
     visuals: Res<Visuals>,
@@ -126,7 +130,6 @@ pub fn walk_grenadiers(
     mut commands: Commands,
     cameras: Query<(&Camera, &Transform), (With<FollowCamera>, Without<Grenadier>)>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    covers: Query<(&Transform, &Cover), Without<Grenadier>>,
     mut walkers: Query<(Entity, &mut Transform, &mut Grenadier), Without<Player>>,
     players: Query<&Transform, (With<Player>, Without<Grenadier>)>,
 ) {
@@ -143,7 +146,6 @@ pub fn walk_grenadiers(
             camera::ground_z_at_viewport_fraction(camera, camera_transform, window, 0.92)
         })
         .unwrap_or(center_z + 15.0);
-    let blocks = cover_blocks(&covers);
     let player_positions: Vec<Vec3> = players
         .iter()
         .map(|transform| transform.translation)
@@ -155,18 +157,18 @@ pub fn walk_grenadiers(
             commands.entity(entity).despawn();
             continue;
         }
-        let step = advance(
-            &mut walker,
-            transform.translation,
-            &player_positions,
-            &blocks,
-            dt,
-        );
-        transform.translation = step.position;
-        transform.rotation = step.rotation;
-        if let Some(spots) = step.volley {
+        let tick = tick_gait(&mut walker, transform.translation, &player_positions, dt);
+        walker.hold = tick.hold;
+        if tick.hold {
+            transform.rotation = yaw(tick.face);
+        }
+        if let Some(spots) = tick.volley {
             audio::play_game(&mut commands, &sounds.grenade_lob, 0.28, 1.0);
-            let origin = Vec3::new(step.position.x, step.position.y + 0.35, step.position.z);
+            let origin = Vec3::new(
+                transform.translation.x,
+                transform.translation.y + 0.35,
+                transform.translation.z,
+            );
             for spot in spots {
                 spawn_throw(&mut commands, &visuals, entity, origin, spot);
             }
@@ -265,13 +267,7 @@ pub(crate) fn blast_damage(distance: f32, radius: f32, full: u32) -> u32 {
     (full as f32 * portion).round() as u32
 }
 
-fn advance(
-    walker: &mut Grenadier,
-    mut position: Vec3,
-    players: &[Vec3],
-    blocks: &[Block],
-    dt: f32,
-) -> Advance {
+fn tick_gait(walker: &mut Grenadier, position: Vec3, players: &[Vec3], dt: f32) -> GaitTick {
     if let Gait::Reloading(timer) = walker.gait {
         let timer = timer - dt;
         walker.gait = if timer <= 0.0 {
@@ -301,38 +297,22 @@ fn advance(
             let spots = dispersion(aim, aim - position, &mut walker.rng);
             walker.gait =
                 Gait::Reloading((weapon.reload_each * u32::from(weapon.count)).as_secs_f32());
-            return Advance {
-                position,
-                rotation: yaw(face),
+            return GaitTick {
+                hold: true,
+                face,
                 volley: Some(spots),
             };
         }
         walker.gait = Gait::Aiming(timer);
-        return Advance {
-            position,
-            rotation: yaw(face),
+        return GaitTick {
+            hold: true,
+            face,
             volley: None,
         };
     }
-
-    let speed = blueprint().speed();
-    let distance = speed * dt;
-    let step = Vec3::new(walker.heading.x, 0.0, walker.heading.y) * distance;
-    let proposed = position + step;
-    if let Some(obstacle) = blocked(proposed, walker.radius, blocks) {
-        walker.heading = turn_away(walker.heading, position, obstacle);
-        let turned = position + Vec3::new(walker.heading.x, 0.0, walker.heading.y) * distance;
-        if blocked(turned, walker.radius, blocks).is_none() {
-            position = turned;
-        }
-    } else {
-        position = proposed;
-    }
-    position.x = route::clamp_actor_x(position.x, position.z, walker.radius);
-    position.y = blueprint().height();
-    Advance {
-        position,
-        rotation: yaw(walker.heading),
+    GaitTick {
+        hold: false,
+        face: walker.heading,
         volley: None,
     }
 }
@@ -421,67 +401,6 @@ fn flat_norm(forward: Vec3) -> Vec3 {
 
 fn yaw(heading: Vec2) -> Quat {
     Quat::from_rotation_y(heading.x.atan2(heading.y))
-}
-
-fn turn_away(heading: Vec2, from: Vec3, obstacle: Vec3) -> Vec2 {
-    let to = Vec2::new(obstacle.x - from.x, obstacle.z - from.z);
-    let cross = heading.x * to.y - heading.y * to.x;
-    let left = Vec2::new(-heading.y, heading.x);
-    let right = Vec2::new(heading.y, -heading.x);
-    if cross.abs() < 0.05 {
-        let here = Vec2::new(from.x, from.z);
-        let obstacle = Vec2::new(obstacle.x, obstacle.z);
-        if (here + left).distance_squared(obstacle) >= (here + right).distance_squared(obstacle) {
-            left
-        } else {
-            right
-        }
-    } else if cross > 0.0 {
-        right
-    } else {
-        left
-    }
-}
-
-fn blocked(position: Vec3, radius: f32, blocks: &[Block]) -> Option<Vec3> {
-    let reach = radius + WALKER_CLEARANCE;
-    for block in blocks {
-        if overlaps(position, reach, block) {
-            return Some(block.center);
-        }
-    }
-    let center = route::centerline_x(position.z);
-    let limit = route::ROAD_HALF_WIDTH - radius;
-    let local = position.x - center;
-    if local.abs() > limit {
-        let outside = center + local.signum() * (route::ROAD_HALF_WIDTH + 2.0);
-        return Some(Vec3::new(outside, 0.0, position.z));
-    }
-    None
-}
-
-fn overlaps(position: Vec3, radius: f32, block: &Block) -> bool {
-    let nearest_x = position.x.clamp(
-        block.center.x - block.half_width,
-        block.center.x + block.half_width,
-    );
-    let nearest_z = position.z.clamp(
-        block.center.z - block.half_depth,
-        block.center.z + block.half_depth,
-    );
-    let offset = Vec2::new(position.x - nearest_x, position.z - nearest_z);
-    offset.length_squared() < radius * radius
-}
-
-fn cover_blocks(covers: &Query<(&Transform, &Cover), Without<Grenadier>>) -> Vec<Block> {
-    covers
-        .iter()
-        .map(|(transform, cover)| Block {
-            center: transform.translation,
-            half_width: cover.half_width,
-            half_depth: cover.half_depth,
-        })
-        .collect()
 }
 
 fn next_unit(state: &mut u32) -> f32 {
@@ -599,16 +518,54 @@ fn spawn_visual(commands: &mut Commands, visuals: &Visuals, actor: Entity, size:
 mod tests {
     use std::time::Duration;
 
+    use super::super::behavior::{self, Footprint};
     use super::*;
 
     use crate::audio::SoundBank;
+
+    struct Advance {
+        position: Vec3,
+        volley: Option<[Vec3; 4]>,
+    }
 
     fn sample() -> Grenadier {
         Grenadier {
             radius: blueprint().radius(),
             heading: Vec2::new(0.0, 1.0),
             gait: Gait::Walking,
+            hold: false,
             rng: 0x51ed_19ab,
+        }
+    }
+
+    /// Aim first, then the shared step, in the same order as the frame.
+    fn advance(
+        walker: &mut Grenadier,
+        position: Vec3,
+        players: &[Vec3],
+        blocks: &[Footprint],
+        dt: f32,
+    ) -> Advance {
+        let tick = tick_gait(walker, position, players, dt);
+        walker.hold = tick.hold;
+        if tick.hold {
+            return Advance {
+                position,
+                volley: tick.volley,
+            };
+        }
+        let (position, heading) = behavior::step_walker(
+            position,
+            walker.heading,
+            walker.radius,
+            blueprint().speed() * dt,
+            blueprint().height(),
+            blocks,
+        );
+        walker.heading = heading;
+        Advance {
+            position,
+            volley: None,
         }
     }
 
@@ -652,7 +609,7 @@ mod tests {
         let mut walker = sample();
         let before = walker.heading;
         let position = Vec3::new(0.0, blueprint().height(), 0.0);
-        let blocks = [Block {
+        let blocks = [Footprint {
             center: Vec3::new(0.0, 0.55, 3.0),
             half_width: 2.7,
             half_depth: 0.5,
@@ -664,7 +621,7 @@ mod tests {
             "a meeting should turn about ninety degrees, dot {dot}"
         );
         assert!(
-            blocked(step.position, walker.radius, &blocks).is_none(),
+            behavior::walker_blocked(step.position, walker.radius, &blocks).is_none(),
             "the walker should be clear of the cover at {:?}",
             step.position
         );
