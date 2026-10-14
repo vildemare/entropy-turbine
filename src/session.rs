@@ -14,6 +14,8 @@ pub struct Session {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Phase {
+    /// The window is up and the run has not started. Continue enters play.
+    Title,
     #[default]
     Playing,
     Paused,

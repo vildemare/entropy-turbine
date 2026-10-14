@@ -10,6 +10,7 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
+use super::behavior::{WalkerHeading, WalkerHold};
 use super::{EnemyKind, EnemyReward};
 use crate::ability::Struck;
 use crate::audio::{self, SoundBank};
@@ -31,24 +32,8 @@ fn launcher() -> &'static LauncherSpec {
 #[derive(Component)]
 pub struct Grenadier {
     pub radius: f32,
-    heading: Vec2,
     gait: Gait,
-    hold: bool,
     rng: u32,
-}
-
-impl Grenadier {
-    pub(crate) fn holding(&self) -> bool {
-        self.hold
-    }
-
-    pub(crate) fn heading(&self) -> Vec2 {
-        self.heading
-    }
-
-    pub(crate) fn set_heading(&mut self, heading: Vec2) {
-        self.heading = heading;
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -96,11 +81,10 @@ pub(crate) fn spawn(
         .spawn((
             Grenadier {
                 radius: hull.radius(),
-                heading,
                 gait: Gait::Walking,
-                hold: false,
                 rng: rng | 1,
             },
+            WalkerHeading(heading),
             EnemyReward {
                 kind: EnemyKind::Grenadier,
                 hit_player: false,
@@ -130,7 +114,8 @@ pub fn aim_grenadiers(
     mut commands: Commands,
     cameras: Query<(&Camera, &Transform), (With<FollowCamera>, Without<Grenadier>)>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    mut walkers: Query<(Entity, &mut Transform, &mut Grenadier), Without<Player>>,
+    mut holds: MessageWriter<WalkerHold>,
+    mut walkers: Query<(Entity, &Transform, &mut Grenadier, &WalkerHeading), Without<Player>>,
     players: Query<&Transform, (With<Player>, Without<Grenadier>)>,
 ) {
     if session.phase != Phase::Playing {
@@ -139,7 +124,7 @@ pub fn aim_grenadiers(
     let Some((camera, camera_transform)) = cameras.iter().next() else {
         return;
     };
-    let center_z = camera_transform.translation.z - camera::CAMERA_BACK_OFFSET;
+    let center_z = camera::framed_ground_z(camera_transform);
     let window = windows.iter().next();
     let exit_z = window
         .and_then(|window| {
@@ -152,15 +137,23 @@ pub fn aim_grenadiers(
         .collect();
     let dt = time.delta_secs();
 
-    for (entity, mut transform, mut walker) in &mut walkers {
+    for (entity, transform, mut walker, heading) in &mut walkers {
         if transform.translation.z > exit_z {
             commands.entity(entity).despawn();
             continue;
         }
-        let tick = tick_gait(&mut walker, transform.translation, &player_positions, dt);
-        walker.hold = tick.hold;
+        let tick = tick_gait(
+            &mut walker,
+            transform.translation,
+            heading.0,
+            &player_positions,
+            dt,
+        );
         if tick.hold {
-            transform.rotation = yaw(tick.face);
+            holds.write(WalkerHold {
+                walker: entity,
+                face: tick.face,
+            });
         }
         if let Some(spots) = tick.volley {
             audio::play_game(&mut commands, &sounds.grenade_lob, 0.28, 1.0);
@@ -267,7 +260,13 @@ pub(crate) fn blast_damage(distance: f32, radius: f32, full: u32) -> u32 {
     (full as f32 * portion).round() as u32
 }
 
-fn tick_gait(walker: &mut Grenadier, position: Vec3, players: &[Vec3], dt: f32) -> GaitTick {
+fn tick_gait(
+    walker: &mut Grenadier,
+    position: Vec3,
+    heading: Vec2,
+    players: &[Vec3],
+    dt: f32,
+) -> GaitTick {
     if let Gait::Reloading(timer) = walker.gait {
         let timer = timer - dt;
         walker.gait = if timer <= 0.0 {
@@ -286,13 +285,12 @@ fn tick_gait(walker: &mut Grenadier, position: Vec3, players: &[Vec3], dt: f32) 
     if let Gait::Aiming(timer) = walker.gait {
         let face = nearest
             .map(|player| flat_dir(position, player))
-            .unwrap_or(walker.heading);
+            .unwrap_or(heading);
         let timer = timer - dt;
         if timer <= 0.0 {
             let weapon = launcher();
             let aim = nearest.unwrap_or_else(|| {
-                position
-                    + Vec3::new(walker.heading.x, 0.0, walker.heading.y) * (weapon.engage * 0.65)
+                position + Vec3::new(heading.x, 0.0, heading.y) * (weapon.engage * 0.65)
             });
             let spots = dispersion(aim, aim - position, &mut walker.rng);
             walker.gait =
@@ -312,7 +310,7 @@ fn tick_gait(walker: &mut Grenadier, position: Vec3, players: &[Vec3], dt: f32) 
     }
     GaitTick {
         hold: false,
-        face: walker.heading,
+        face: heading,
         volley: None,
     }
 }
@@ -397,10 +395,6 @@ fn flat_norm(forward: Vec3) -> Vec3 {
     } else {
         Vec3::Z
     }
-}
-
-fn yaw(heading: Vec2) -> Quat {
-    Quat::from_rotation_y(heading.x.atan2(heading.y))
 }
 
 fn next_unit(state: &mut u32) -> f32 {
@@ -531,9 +525,7 @@ mod tests {
     fn sample() -> Grenadier {
         Grenadier {
             radius: blueprint().radius(),
-            heading: Vec2::new(0.0, 1.0),
             gait: Gait::Walking,
-            hold: false,
             rng: 0x51ed_19ab,
         }
     }
@@ -541,28 +533,28 @@ mod tests {
     /// Aim first, then the shared step, in the same order as the frame.
     fn advance(
         walker: &mut Grenadier,
+        heading: &mut Vec2,
         position: Vec3,
         players: &[Vec3],
         blocks: &[Footprint],
         dt: f32,
     ) -> Advance {
-        let tick = tick_gait(walker, position, players, dt);
-        walker.hold = tick.hold;
+        let tick = tick_gait(walker, position, *heading, players, dt);
         if tick.hold {
             return Advance {
                 position,
                 volley: tick.volley,
             };
         }
-        let (position, heading) = behavior::step_walker(
+        let (position, next) = behavior::step_walker(
             position,
-            walker.heading,
+            *heading,
             walker.radius,
             blueprint().speed() * dt,
             blueprint().height(),
             blocks,
         );
-        walker.heading = heading;
+        *heading = next;
         Advance {
             position,
             volley: None,
@@ -607,15 +599,16 @@ mod tests {
     #[test]
     fn meeting_cover_turns_the_walker_ninety_degrees() {
         let mut walker = sample();
-        let before = walker.heading;
+        let mut heading = Vec2::new(0.0, 1.0);
+        let before = heading;
         let position = Vec3::new(0.0, blueprint().height(), 0.0);
         let blocks = [Footprint {
             center: Vec3::new(0.0, 0.55, 3.0),
             half_width: 2.7,
             half_depth: 0.5,
         }];
-        let step = advance(&mut walker, position, &[], &blocks, 1.0);
-        let dot = before.dot(walker.heading);
+        let step = advance(&mut walker, &mut heading, position, &[], &blocks, 1.0);
+        let dot = before.dot(heading);
         assert!(
             dot.abs() < 0.15,
             "a meeting should turn about ninety degrees, dot {dot}"
@@ -630,13 +623,14 @@ mod tests {
     #[test]
     fn the_walker_holds_still_for_the_aim_then_throws_and_walks_the_reload() {
         let mut walker = sample();
+        let mut heading = Vec2::new(0.0, 1.0);
         let players = [Vec3::new(2.0, 0.8, 8.0)];
         let position = Vec3::new(0.0, blueprint().height(), 0.0);
-        let held = advance(&mut walker, position, &players, &[], 0.5);
+        let held = advance(&mut walker, &mut heading, position, &players, &[], 0.5);
         assert!(held.volley.is_none());
         assert_eq!(held.position, position);
         assert!(matches!(walker.gait, Gait::Aiming(timer) if (timer - 1.5).abs() < 0.001));
-        let thrown = advance(&mut walker, held.position, &players, &[], 1.5);
+        let thrown = advance(&mut walker, &mut heading, held.position, &players, &[], 1.5);
         let spots = thrown.volley.expect("volley");
         assert_eq!(spots.len(), 4);
         let reload = match walker.gait {
@@ -644,7 +638,14 @@ mod tests {
             other => panic!("expected reload, got {other:?}"),
         };
         assert!((reload - 4.0).abs() < 0.001);
-        let walked = advance(&mut walker, thrown.position, &players, &[], 0.5);
+        let walked = advance(
+            &mut walker,
+            &mut heading,
+            thrown.position,
+            &players,
+            &[],
+            0.5,
+        );
         assert!(walked.volley.is_none());
         assert!(
             walked.position.distance(thrown.position) > 0.2,

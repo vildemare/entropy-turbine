@@ -63,6 +63,15 @@ struct ChargeTick {
     discharge: bool,
 }
 
+/// The drive saw a player, or the lane ahead. The jolt spends its own charge.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct JoltCue {
+    pub bot: Entity,
+    pub in_range: bool,
+    pub aim: Vec3,
+    pub origin: Vec3,
+}
+
 pub fn spawn_zap_bots(
     time: Res<Time>,
     session: Res<Session>,
@@ -90,7 +99,7 @@ pub fn spawn_zap_bots(
     }
 
     let hull = cow();
-    let center_z = camera.translation.z - camera::CAMERA_BACK_OFFSET;
+    let center_z = camera::framed_ground_z(camera);
     let z = center_z - 32.0;
     let lane = director.random() * 1.6 - 0.8;
     let side = if director.random() < 0.5 { -1.0 } else { 1.0 };
@@ -143,10 +152,8 @@ pub fn spawn_zap_bots(
 pub fn drive_zap_bots(
     time: Res<Time>,
     session: Res<Session>,
-    visuals: Res<Visuals>,
-    sounds: Res<SoundBank>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
     mut commands: Commands,
+    mut cues: MessageWriter<JoltCue>,
     cameras: Query<(&Camera, &Transform), (With<FollowCamera>, Without<ZapBot>)>,
     windows: Query<&Window, With<PrimaryWindow>>,
     covers: Query<(&Transform, &Cover), Without<ZapBot>>,
@@ -160,7 +167,7 @@ pub fn drive_zap_bots(
     let Some((camera, camera_transform)) = cameras.iter().next() else {
         return;
     };
-    let center_z = camera_transform.translation.z - camera::CAMERA_BACK_OFFSET;
+    let center_z = camera::framed_ground_z(camera_transform);
     let window = windows.iter().next();
     let exit_z = window
         .and_then(|window| {
@@ -216,18 +223,45 @@ pub fn drive_zap_bots(
 
         // Local +Z is travel. Bevy's forward() is local −Z, so the facing used
         // for an empty lane is the same vector the hull is built along.
-        // The whine is the charge. It starts when a player is inside the
-        // jolt's reach, and a rise already underway still finishes.
         let facing = transform.rotation * Vec3::Z;
         let in_range = player_in_bolt_range(transform.translation, &player_positions);
-        let tick = step_charge(&mut bot, dt, in_range);
+        let aim = aim_direction(transform.translation, facing, &player_positions);
+        let origin = bolt_origin(transform.translation, aim, bot.radius);
+        cues.write(JoltCue {
+            bot: entity,
+            in_range,
+            aim,
+            origin,
+        });
+    }
+}
+
+pub fn charge_jolts(
+    time: Res<Time>,
+    session: Res<Session>,
+    visuals: Res<Visuals>,
+    sounds: Res<SoundBank>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut commands: Commands,
+    mut cues: MessageReader<JoltCue>,
+    mut bots: Query<&mut ZapBot>,
+) {
+    if session.phase != Phase::Playing {
+        return;
+    }
+    let dt = time.delta_secs();
+    for cue in cues.read().copied() {
+        let Ok(mut bot) = bots.get_mut(cue.bot) else {
+            continue;
+        };
+        // The whine is the charge. It starts when a player is inside the
+        // jolt's reach, and a rise already underway still finishes.
+        let tick = step_charge(&mut bot, dt, cue.in_range);
         if tick.start_whine {
             audio::play_game(&mut commands, &sounds.zap_charge, 0.26, 1.0);
         }
         if tick.discharge {
-            let aim = aim_direction(transform.translation, facing, &player_positions);
-            let origin = bolt_origin(transform.translation, aim, bot.radius);
-            spawn_bolt(&mut commands, &visuals, entity, origin, aim);
+            spawn_bolt(&mut commands, &visuals, cue.bot, cue.origin, cue.aim);
             audio::play_game(&mut commands, &sounds.zap, 0.36, 1.0);
         }
         if let Some(mut material) = materials.get_mut(&bot.prongs) {
@@ -596,7 +630,8 @@ mod tests {
             .insert_resource(SoundBank::default())
             .insert_resource(Assets::<StandardMaterial>::default())
             .insert_resource(Visuals::default())
-            .add_systems(Update, drive_zap_bots);
+            .add_message::<JoltCue>()
+            .add_systems(Update, (drive_zap_bots, charge_jolts).chain());
         app.world_mut().spawn((
             FollowCamera,
             Camera::default(),
@@ -671,7 +706,8 @@ mod tests {
             .insert_resource(SoundBank::default())
             .insert_resource(Assets::<StandardMaterial>::default())
             .insert_resource(Visuals::default())
-            .add_systems(Update, drive_zap_bots);
+            .add_message::<JoltCue>()
+            .add_systems(Update, (drive_zap_bots, charge_jolts).chain());
         app.world_mut().spawn((
             FollowCamera,
             Camera::default(),
@@ -712,7 +748,8 @@ mod tests {
             .insert_resource(SoundBank::default())
             .insert_resource(Assets::<StandardMaterial>::default())
             .insert_resource(Visuals::default())
-            .add_systems(Update, drive_zap_bots);
+            .add_message::<JoltCue>()
+            .add_systems(Update, (drive_zap_bots, charge_jolts).chain());
         app.world_mut().spawn((
             FollowCamera,
             Camera::default(),
@@ -798,7 +835,8 @@ mod tests {
             .insert_resource(SoundBank::default())
             .insert_resource(Assets::<StandardMaterial>::default())
             .insert_resource(Visuals::default())
-            .add_systems(Update, drive_zap_bots);
+            .add_message::<JoltCue>()
+            .add_systems(Update, (drive_zap_bots, charge_jolts).chain());
         app.world_mut().spawn((
             FollowCamera,
             Camera::default(),

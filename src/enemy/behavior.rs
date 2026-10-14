@@ -15,6 +15,24 @@ use crate::session::{Phase, Session};
 use crate::world::camera::{self, FollowCamera};
 use crate::world::route;
 
+/// The spacing system noticed a body stop making progress.
+/// The gunner peels its own strafe.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct BackupStarted {
+    pub body: Entity,
+}
+
+/// The launcher is aiming, so this step stays put and faces `face`.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct WalkerHold {
+    pub walker: Entity,
+    pub face: Vec2,
+}
+
+/// Heading for the grenade walker's step. The step owns it.
+#[derive(Component, Clone, Copy, Debug)]
+pub(crate) struct WalkerHeading(pub Vec2);
+
 /// Shared backup when a walker or a cow stops making progress.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Unstick {
@@ -335,12 +353,13 @@ pub(crate) fn tracks_blocked(position: Vec3, radius: f32, blocks: &[Footprint]) 
 
 pub fn separate_enemies(
     time: Res<Time>,
-    mut enemies: Query<(&mut Transform, &mut super::Enemy), With<super::Enemy>>,
+    mut started: MessageWriter<BackupStarted>,
+    mut enemies: Query<(Entity, &mut Transform, &mut super::Enemy), With<super::Enemy>>,
     covers: Query<(&Transform, &Cover), (With<Cover>, Without<super::Enemy>)>,
 ) {
     for _ in 0..2 {
         let mut pairs = enemies.iter_combinations_mut();
-        while let Some([(mut a, enemy_a), (mut b, enemy_b)]) = pairs.fetch_next() {
+        while let Some([(_, mut a, enemy_a), (_, mut b, enemy_b)]) = pairs.fetch_next() {
             let difference = Vec2::new(
                 a.translation.x - b.translation.x,
                 a.translation.z - b.translation.z,
@@ -364,7 +383,7 @@ pub fn separate_enemies(
             b.translation.z -= shift.y;
         }
     }
-    for (mut transform, mut enemy) in &mut enemies {
+    for (entity, mut transform, mut enemy) in &mut enemies {
         for (cover_transform, cover) in &covers {
             separate_from_cover(
                 &mut transform.translation,
@@ -383,7 +402,7 @@ pub fn separate_enemies(
             transform.translation.z - enemy.drift.from.z,
         );
         if note_drift(&mut enemy.drift, moved, time.delta_secs()) {
-            enemy.evade_direction = -enemy.evade_direction;
+            started.write(BackupStarted { body: entity });
         }
     }
 }
@@ -428,7 +447,8 @@ pub fn walk_grenadiers(
     cameras: Query<(&Camera, &Transform), (With<FollowCamera>, Without<Grenadier>)>,
     windows: Query<&Window, With<PrimaryWindow>>,
     covers: Query<(&Transform, &Cover), Without<Grenadier>>,
-    mut walkers: Query<(&mut Transform, &mut Grenadier), Without<Player>>,
+    mut holds: MessageReader<WalkerHold>,
+    mut walkers: Query<(Entity, &mut Transform, &mut WalkerHeading, &Grenadier), Without<Player>>,
 ) {
     if session.phase != Phase::Playing {
         return;
@@ -436,7 +456,7 @@ pub fn walk_grenadiers(
     let Some((camera, camera_transform)) = cameras.iter().next() else {
         return;
     };
-    let center_z = camera_transform.translation.z - camera::CAMERA_BACK_OFFSET;
+    let center_z = camera::framed_ground_z(camera_transform);
     let window = windows.iter().next();
     let exit_z = window
         .and_then(|window| {
@@ -447,22 +467,27 @@ pub fn walk_grenadiers(
     let definition = crate::character::grenadier();
     let distance = definition.speed() * time.delta_secs();
     let height = definition.height();
+    let holding: Vec<(Entity, Vec2)> = holds.read().map(|hold| (hold.walker, hold.face)).collect();
 
-    for (mut transform, mut walker) in &mut walkers {
-        if transform.translation.z > exit_z || walker.holding() {
+    for (entity, mut transform, mut heading, walker) in &mut walkers {
+        if transform.translation.z > exit_z {
             continue;
         }
-        let (position, heading) = step_walker(
+        if let Some((_, face)) = holding.iter().find(|(id, _)| *id == entity) {
+            transform.rotation = Quat::from_rotation_y(face.x.atan2(face.y));
+            continue;
+        }
+        let (position, next) = step_walker(
             transform.translation,
-            walker.heading(),
+            heading.0,
             walker.radius,
             distance,
             height,
             &blocks,
         );
-        walker.set_heading(heading);
+        heading.0 = next;
         transform.translation = position;
-        transform.rotation = Quat::from_rotation_y(heading.x.atan2(heading.y));
+        transform.rotation = Quat::from_rotation_y(next.x.atan2(next.y));
     }
 }
 

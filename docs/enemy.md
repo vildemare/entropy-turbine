@@ -80,7 +80,7 @@ red cross on the ground with a circle around it. The circle's rim is 2 metres fr
 the whole of the blast. Damage is 80 at the center and falls off to nothing at the rim. Every body
 standing in a circle takes its share, including other machines and the walker when it is inside one.
 When several marks land in the same moment, the player's grace answers the strongest and the lighter
-ones find that grace already up. The grenades are in the air for about a second. Reload is one second for each grenade, four seconds for the
+ones find that grace already up. The grenades are in the air for about a second and a half. Reload is one second for each grenade, four seconds for the
 volley, and the walker walks during that reload. A clear player starts another aim once the reload is
 done.
 

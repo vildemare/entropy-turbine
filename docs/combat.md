@@ -10,7 +10,7 @@ Straight shots stop on barricades, rubble, and the side boulders. The [Steamist]
 
 Keep collision simple: swept projectiles against round actor footprints and box-shaped cover, plus lightweight separation between enemies. Realistic rigid-body physics is unnecessary for this game.
 
-A round carries its material, its delivery, and its damage. The body it meets applies that through its own abilities, in order, so hit points, a flat reduction, or an energy shield each handle their part. An enemy shot that meets another enemy stops there. Cover and the side boulders stop the round and play the impact. When hit points reach zero, the body reports that it has died.
+A round carries its material, its delivery, and its damage. The body it meets applies that through its own abilities, in order, so hit points, a flat reduction, or an energy shield each handle their part. An enemy shot that meets another enemy stops there. Cover and the side boulders stop the round and play the impact. When hit points reach zero, the body reports that it has died. A defeated machine then bursts where it stood: a short red flash, a ground ring, and a few brass shards, gone in under half a second. The point orb rises from that spot at 5 m/s, and gains another 5 m/s every 200 ms, up to 100 m/s. Once it is 75 metres clear of the ground, its value is added once to the shared bank.
 
 A flat reduction and a live shield each announce the hit they take, and that announcement plays its own short sound. A body with its shield up wears a faint blue shimmer. The shimmer hides while the shield is down and returns with the pool.
 

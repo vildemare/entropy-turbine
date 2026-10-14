@@ -2,13 +2,15 @@
 //!
 //! [`resolve_hits`] reports the nearest body a round met. [`deliver_hits`]
 //! walks that body's abilities. [`present_notices`] carries out what those
-//! abilities asked for.
+//! abilities asked for, including the short burst where a machine died.
+
+use std::time::Duration;
 
 use bevy::prelude::*;
 
 use crate::ability::{self, Notice, Struck};
 use crate::audio::{self, SoundBank};
-use crate::enemy::{Cover, Drift, Enemy, EnemyReward};
+use crate::enemy::{Cover, Drift, Enemy, EnemyReward, ShotsRecalled};
 use crate::player::Player;
 use crate::session::{Phase, Session};
 use crate::world::route::{self, Boulder};
@@ -48,43 +50,62 @@ pub struct Projectile {
     pub owner: Entity,
 }
 
+/// A bounty rising off the ground. `floor` is the surface it left.
+/// The value is paid once into the shared bank, so every player receives it.
+/// `speed` starts at 5 m/s and gains 5 m/s every 200 ms, up to 100 m/s.
 #[derive(Component)]
-pub struct PointOrb(pub u32);
+pub struct PointOrb {
+    pub value: u32,
+    pub floor: f32,
+    pub speed: f32,
+    boost: f32,
+}
+
+const ORB_SPEED: f32 = 5.0;
+const ORB_SPEED_STEP: f32 = 5.0;
+const ORB_SPEED_CAP: f32 = 100.0;
+const ORB_BOOST: Duration = Duration::from_millis(200);
+const ORB_RISE: f32 = 75.0;
+
+fn rising_orb(value: u32, floor: f32) -> PointOrb {
+    PointOrb {
+        value,
+        floor,
+        speed: ORB_SPEED,
+        boost: ORB_BOOST.as_secs_f32(),
+    }
+}
 
 pub fn collect_orbs(
     time: Res<Time>,
     mut session: ResMut<Session>,
     mut commands: Commands,
-    players: Query<&Transform, With<Player>>,
-    mut orbs: Query<(Entity, &mut Transform, &PointOrb), Without<Player>>,
-    camera: Query<&Transform, (With<crate::world::camera::FollowCamera>, Without<PointOrb>)>,
+    mut orbs: Query<(Entity, &mut Transform, &mut PointOrb)>,
 ) {
     if session.phase != Phase::Playing {
         return;
     }
-    let rear = camera
-        .iter()
-        .next()
-        .map(|camera| camera.translation.z + 10.0);
-    for (entity, mut transform, orb) in &mut orbs {
-        let mut collected = false;
-        for player in &players {
-            let delta = Vec2::new(
-                player.translation.x - transform.translation.x,
-                player.translation.z - transform.translation.z,
-            );
-            if delta.length() < 1.2 {
-                session.points += orb.0;
-                collected = true;
+    for (entity, mut transform, mut orb) in &mut orbs {
+        let mut dt = time.delta_secs();
+        while dt > 0.0001 {
+            if orb.boost <= 0.0 {
+                if orb.speed >= ORB_SPEED_CAP {
+                    transform.translation.y += orb.speed * dt;
+                    break;
+                }
+                orb.speed = (orb.speed + ORB_SPEED_STEP).min(ORB_SPEED_CAP);
+                orb.boost += ORB_BOOST.as_secs_f32();
+            }
+            let slice = dt.min(orb.boost);
+            transform.translation.y += orb.speed * slice;
+            orb.boost -= slice;
+            dt -= slice;
+            if transform.translation.y >= orb.floor + ORB_RISE {
                 break;
             }
-            if delta.length() < 3.2 {
-                let step = delta.normalize_or_zero() * 7.0 * time.delta_secs();
-                transform.translation.x += step.x;
-                transform.translation.z += step.y;
-            }
         }
-        if collected || rear.is_some_and(|rear| transform.translation.z > rear) {
+        if transform.translation.y >= orb.floor + ORB_RISE {
+            session.points += orb.value;
             commands.entity(entity).despawn();
         }
     }
@@ -214,20 +235,31 @@ pub fn deliver_hits(
     }
 }
 
+pub fn recall_shots(
+    mut recalled: MessageReader<ShotsRecalled>,
+    mut commands: Commands,
+    bullets: Query<(Entity, &Projectile)>,
+) {
+    for recall in recalled.read().copied() {
+        for (entity, projectile) in &bullets {
+            if projectile.faction == Faction::Enemy && projectile.owner == recall.owner {
+                commands.entity(entity).despawn();
+            }
+        }
+    }
+}
+
 pub fn present_notices(
     mut notices: MessageReader<Notice>,
     mut commands: Commands,
     mut session: ResMut<Session>,
     sounds: Res<SoundBank>,
     visuals: Res<Visuals>,
-    mut rewards: Query<&mut EnemyReward>,
+    rewards: Query<&EnemyReward>,
 ) {
     for notice in notices.read().copied() {
         match notice {
-            Notice::Hurt { player: true, by } => {
-                if let Ok(mut reward) = rewards.get_mut(by) {
-                    reward.hit_player = true;
-                }
+            Notice::Hurt { player: true, .. } => {
                 audio::play_game(&mut commands, &sounds.player_hurt, 0.35, 1.0);
             }
             Notice::Hurt { player: false, .. } => {
@@ -243,13 +275,15 @@ pub fn present_notices(
                 at,
             } => {
                 audio::play_game(&mut commands, &sounds.death, 0.18, 1.3);
+                spawn_wreck(&mut commands, &visuals, at);
                 if let Ok(reward) = rewards.get(target) {
                     let points = reward.points();
+                    let floor = 0.35;
                     commands.spawn((
-                        PointOrb(points),
+                        rising_orb(points, floor),
                         Mesh3d(visuals.orb_mesh.clone()),
                         MeshMaterial3d(visuals.orb_material.clone()),
-                        Transform::from_xyz(at.x, 0.35, at.z),
+                        Transform::from_xyz(at.x, floor, at.z),
                     ));
                 }
                 session.kills += 1;
@@ -362,6 +396,99 @@ pub fn segment_boulder_t(start: Vec3, end: Vec3, transform: &Transform) -> Optio
     Some(enter)
 }
 
+const BURST_LIFE: Duration = Duration::from_millis(450);
+
+/// A piece of the flash left where a machine died.
+#[derive(Component)]
+pub struct WreckBurst {
+    age: f32,
+    origin: Vec3,
+    piece: WreckPiece,
+}
+
+#[derive(Clone, Copy)]
+enum WreckPiece {
+    Core,
+    Ring,
+    Shard(Vec3),
+}
+
+fn spawn_wreck(commands: &mut Commands, visuals: &Visuals, at: Vec3) {
+    let origin = Vec3::new(at.x, 0.45, at.z);
+    commands.spawn((
+        WreckBurst {
+            age: 0.0,
+            origin,
+            piece: WreckPiece::Core,
+        },
+        Mesh3d(visuals.bullet_mesh.clone()),
+        MeshMaterial3d(visuals.blast_mark_material.clone()),
+        Transform::from_translation(origin),
+        GlobalTransform::default(),
+        Visibility::default(),
+    ));
+    commands.spawn((
+        WreckBurst {
+            age: 0.0,
+            origin: Vec3::new(at.x, 0.12, at.z),
+            piece: WreckPiece::Ring,
+        },
+        Mesh3d(visuals.blast_ring_mesh.clone()),
+        MeshMaterial3d(visuals.blast_mark_material.clone()),
+        Transform::from_xyz(at.x, 0.12, at.z)
+            .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+        GlobalTransform::default(),
+        Visibility::default(),
+    ));
+    for index in 0..6 {
+        let angle = index as f32 * std::f32::consts::TAU / 6.0;
+        let dir = Vec3::new(angle.cos(), 0.45, angle.sin());
+        commands.spawn((
+            WreckBurst {
+                age: 0.0,
+                origin,
+                piece: WreckPiece::Shard(dir),
+            },
+            Mesh3d(visuals.enemy_part_mesh.clone()),
+            MeshMaterial3d(visuals.enemy_brass_material.clone()),
+            Transform::from_translation(origin).with_scale(Vec3::splat(0.16)),
+            GlobalTransform::default(),
+            Visibility::default(),
+        ));
+    }
+}
+
+pub fn bloom_bursts(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut bursts: Query<(Entity, &mut Transform, &mut WreckBurst)>,
+) {
+    let life = BURST_LIFE.as_secs_f32();
+    let dt = time.delta_secs();
+    for (entity, mut transform, mut burst) in &mut bursts {
+        burst.age += dt;
+        if burst.age >= life {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let t = (burst.age / life).clamp(0.0, 1.0);
+        match burst.piece {
+            WreckPiece::Core => {
+                let scale = 1.2 + (1.0 - (1.0 - t).powi(2)) * 6.5;
+                transform.scale = Vec3::splat(scale);
+                transform.translation.y = burst.origin.y + t * 0.35;
+            }
+            WreckPiece::Ring => {
+                transform.scale = Vec3::splat(0.35 + t * 2.1);
+            }
+            WreckPiece::Shard(dir) => {
+                transform.translation = burst.origin + dir * (t * 1.7);
+                transform.scale = Vec3::splat((0.22 * (1.0 - t)).max(0.04));
+            }
+        }
+    }
+}
+
 pub fn expire_projectiles(
     time: Res<Time>,
     mut commands: Commands,
@@ -462,17 +589,98 @@ mod tests {
     }
 
     #[test]
-    fn nearby_orb_adds_its_value_once() {
+    fn a_defeated_enemy_bursts_and_the_flash_fades() {
+        let mut app = App::new();
+        prepare(&mut app);
+        app.insert_resource(Time::<()>::default())
+            .add_systems(Update, bloom_bursts.after(present_notices));
+        let enemy = app
+            .world_mut()
+            .spawn((
+                EnemyReward {
+                    kind: EnemyKind::Scout,
+                    hit_player: false,
+                },
+                Transform::from_xyz(2.0, 0.5, 3.0),
+            ))
+            .id();
+        app.world_mut().write_message(Notice::Died {
+            player: false,
+            target: enemy,
+            at: Vec3::new(2.0, 0.5, 3.0),
+        });
+        app.update();
+
+        assert!(app.world().get_entity(enemy).is_err());
+        assert_eq!(app.world().resource::<Session>().kills, 1);
+        let mut bursts = app.world_mut().query::<(Entity, &WreckBurst)>();
+        let found: Vec<_> = bursts.iter(app.world()).map(|(entity, _)| entity).collect();
+        assert_eq!(found.len(), 8);
+        let mut orbs = app.world_mut().query::<&PointOrb>();
+        assert_eq!(orbs.iter(app.world()).count(), 1);
+        let core = bursts
+            .iter(app.world())
+            .find_map(|(entity, burst)| matches!(burst.piece, WreckPiece::Core).then_some(entity))
+            .unwrap();
+        let opened = app.world().get::<Transform>(core).unwrap().scale.x;
+
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_millis(200));
+        app.update();
+        let grown = app.world().get::<Transform>(core).unwrap().scale.x;
+        assert!(grown > opened);
+
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_millis(400));
+        app.update();
+        assert_eq!(
+            app.world_mut()
+                .query::<&WreckBurst>()
+                .iter(app.world())
+                .count(),
+            0
+        );
+        assert_eq!(orbs.iter(app.world()).count(), 1);
+    }
+
+    #[test]
+    fn a_risen_orb_pays_the_shared_bank_once() {
         let mut app = App::new();
         app.insert_resource(Session::default())
             .insert_resource(Time::<()>::default())
             .add_systems(Update, collect_orbs);
         app.world_mut()
             .spawn((Player, Transform::from_xyz(0.0, 0.75, 0.0)));
+        app.world_mut()
+            .spawn((Player, Transform::from_xyz(8.0, 0.75, 6.0)));
         let orb = app
             .world_mut()
-            .spawn((PointOrb(4), Transform::from_xyz(0.5, 0.35, 0.0)))
+            .spawn((rising_orb(4, 0.35), Transform::from_xyz(3.0, 0.35, -4.0)))
             .id();
+
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_millis(100));
+        app.update();
+        assert_eq!(app.world().resource::<Session>().points, 0);
+        let early = app.world().get::<Transform>(orb).unwrap().translation.y;
+        assert!((early - 0.85).abs() < 0.001);
+        assert!((app.world().get::<PointOrb>(orb).unwrap().speed - 5.0).abs() < 0.001);
+
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_millis(300));
+        app.update();
+        let later = app.world().get::<Transform>(orb).unwrap().translation.y;
+        assert!((later - 3.35).abs() < 0.001);
+        assert!((app.world().get::<PointOrb>(orb).unwrap().speed - 10.0).abs() < 0.001);
+        assert_eq!(app.world().resource::<Session>().points, 0);
+
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_millis(3_000));
         app.update();
         assert_eq!(app.world().resource::<Session>().points, 4);
         assert!(app.world().get_entity(orb).is_err());

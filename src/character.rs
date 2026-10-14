@@ -466,7 +466,7 @@ pub fn grenadier() -> &'static CharacterDefinition {
                 reload_each: Duration::from_secs(1),
                 blast_radius: 2.0,
                 blast_damage: 80,
-                flight: Duration::from_millis(900),
+                flight: Duration::from_millis(1_400),
                 spread_min: 1.25,
                 spread_max: 2.35,
                 separation: 1.35,

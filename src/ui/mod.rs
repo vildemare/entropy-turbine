@@ -10,6 +10,7 @@ use crate::session::{Phase, Session};
 pub mod checkpoint;
 pub mod cursor;
 pub mod pause;
+pub mod title;
 
 #[derive(Resource, Clone)]
 pub struct UiFonts {

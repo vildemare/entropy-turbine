@@ -11,12 +11,30 @@ use bevy::{prelude::*, window::PrimaryWindow};
 use super::behavior::{self, Drift};
 use super::rifle::{Look, Rifle, RifleAim, RoundFired};
 use super::{Cover, Enemy, EnemyKind, EnemyReward, EnemyState, Tactic};
-use crate::combat::{self, Faction, Health, HitCircle, Projectile};
+use crate::combat::{self, Faction, Health, HitCircle};
 use crate::player::{MovementSpeed, Player};
 use crate::session::{Phase, Session};
 use crate::world::camera::{self, FollowCamera};
 use crate::world::route::{self, Boulder};
 use crate::world::visuals::Visuals;
+
+/// A gunner has fallen back off the field. Its shots belong to the projectile system.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct ShotsRecalled {
+    pub owner: Entity,
+}
+
+pub fn peel_backups(
+    mut started: MessageReader<behavior::BackupStarted>,
+    mut enemies: Query<&mut Enemy>,
+) {
+    for event in started.read().copied() {
+        let Ok(mut enemy) = enemies.get_mut(event.body) else {
+            continue;
+        };
+        enemy.evade_direction = -enemy.evade_direction;
+    }
+}
 
 pub fn apply_volleys(mut fired: MessageReader<RoundFired>, mut enemies: Query<&mut Enemy>) {
     for round in fired.read().copied() {
@@ -401,11 +419,11 @@ pub fn shoot_enemies(
 
 pub fn cleanup_behind_camera(
     mut commands: Commands,
+    mut recalled: MessageWriter<ShotsRecalled>,
     cameras: Query<(&Camera, &Transform), (With<FollowCamera>, Without<Enemy>)>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut enemies: Query<(Entity, &mut Transform, &mut Enemy, Option<&Retreating>)>,
     covers: Query<(Entity, &Transform), (With<Cover>, Without<Enemy>)>,
-    bullets: Query<(Entity, &Projectile)>,
 ) {
     let Some((camera, camera_transform)) = cameras.iter().next() else {
         return;
@@ -416,8 +434,8 @@ pub fn cleanup_behind_camera(
         .and_then(|window| {
             camera::ground_z_at_viewport_fraction(camera, camera_transform, window, 0.84)
         })
-        .unwrap_or(camera_transform.translation.z - camera::CAMERA_BACK_OFFSET + 12.0);
-    let cover_cutoff = camera_transform.translation.z - camera::CAMERA_BACK_OFFSET + 24.0;
+        .unwrap_or(camera::framed_ground_z(camera_transform) + 12.0);
+    let cover_cutoff = camera::framed_ground_z(camera_transform) + 24.0;
     let mut removed = Vec::new();
     for (entity, mut transform, mut enemy, retreating) in &mut enemies {
         if let Some(retreat) = retreating {
@@ -454,10 +472,8 @@ pub fn cleanup_behind_camera(
             removed.push(entity);
         }
     }
-    for (entity, projectile) in &bullets {
-        if projectile.faction == Faction::Enemy && removed.contains(&projectile.owner) {
-            commands.entity(entity).despawn();
-        }
+    for owner in removed {
+        recalled.write(ShotsRecalled { owner });
     }
     for (entity, transform) in &covers {
         if transform.translation.z > cover_cutoff {
@@ -563,7 +579,7 @@ mod tests {
     use super::super::behavior::{UNSTICK, separate_enemies};
     use super::*;
     use crate::audio::SoundBank;
-    use crate::combat::{Delivery, Material};
+    use crate::combat::{Delivery, Material, Projectile, recall_shots};
     use crate::enemy::{Rifle, fire_rifles};
     use crate::world::visuals::Visuals;
 
@@ -574,7 +590,8 @@ mod tests {
     #[test]
     fn enemies_retreat_sideways_before_leaving_and_their_shots_stop() {
         let mut app = App::new();
-        app.add_systems(Update, cleanup_behind_camera);
+        app.add_message::<ShotsRecalled>()
+            .add_systems(Update, (cleanup_behind_camera, recall_shots).chain());
         app.world_mut().spawn((
             FollowCamera,
             Camera::default(),
@@ -844,11 +861,13 @@ mod tests {
             .insert_resource(SoundBank::default())
             .add_message::<RifleAim>()
             .add_message::<RoundFired>()
+            .add_message::<behavior::BackupStarted>()
             .add_systems(
                 Update,
                 (
                     move_enemies,
                     separate_enemies,
+                    peel_backups,
                     shoot_enemies,
                     fire_rifles,
                     apply_volleys,

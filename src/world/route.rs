@@ -5,6 +5,8 @@ use crate::ability::Abilities;
 use crate::player::{LocalPlayer, Player};
 
 pub const ROAD_HALF_WIDTH: f32 = 13.0;
+/// The left boulder line sits this far inside the road edge.
+const LEFT_BANK_TUCK: f32 = 0.5;
 pub(crate) const BOULDER_SIZE: Vec3 = Vec3::new(2.8, 1.5, 3.5);
 const VISIBLE_LENGTH: f32 = 300.0;
 const BOULDER_SPACING: f32 = 3.0;
@@ -139,8 +141,7 @@ pub fn setup(
                 Mesh3d(boulder_mesh.clone()),
                 MeshMaterial3d(boulder_material.clone()),
                 Transform::from_xyz(
-                    centerline_x(index as f32 * BOULDER_SPACING)
-                        + side * (ROAD_HALF_WIDTH + x_extent),
+                    bank_x(centerline_x(index as f32 * BOULDER_SPACING), side, x_extent),
                     0.65 + variation * 0.06,
                     index as f32 * BOULDER_SPACING,
                 )
@@ -182,7 +183,7 @@ pub fn follow_route(
             let x_extent = (BOULDER_SIZE.x * transform.scale.x * angle.cos().abs()
                 + BOULDER_SIZE.z * transform.scale.z * angle.sin().abs())
                 * 0.5;
-            transform.translation.x = centerline_x(z) + side * (ROAD_HALF_WIDTH + x_extent);
+            transform.translation.x = bank_x(centerline_x(z), side, x_extent);
             transform.translation.z = z;
             transform.rotation = Quat::from_rotation_y(angle);
         } else if transform.translation.y < 0.0 {
@@ -192,6 +193,11 @@ pub fn follow_route(
             transform.translation.z = mesh_center;
         }
     }
+}
+
+fn bank_x(center: f32, side: f32, x_extent: f32) -> f32 {
+    let tuck = if side < 0.0 { LEFT_BANK_TUCK } else { 0.0 };
+    center + side * (ROAD_HALF_WIDTH + x_extent - tuck)
 }
 
 fn boulder_segment(index: i32, center_segment: i32) -> i32 {
@@ -260,5 +266,14 @@ mod tests {
         let first_z = z + VISIBLE_LENGTH * 0.5;
         assert_eq!(vertices[0][0], centerline_x(first_z) - ROAD_HALF_WIDTH);
         assert_eq!(vertices[1][0], centerline_x(first_z) + ROAD_HALF_WIDTH);
+    }
+
+    #[test]
+    fn the_left_bank_sits_half_a_metre_inside_the_right() {
+        let extent = 1.4;
+        let left = bank_x(3.0, -1.0, extent);
+        let right = bank_x(3.0, 1.0, extent);
+        assert!(((right - 3.0) - (3.0 - left) - LEFT_BANK_TUCK).abs() < 0.001);
+        assert!((LEFT_BANK_TUCK - 0.5).abs() < 0.001);
     }
 }

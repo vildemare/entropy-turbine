@@ -10,7 +10,7 @@ These notes are split the same way as `src/`. This page is the current build and
 - [Enemies](enemy.md) — waves, formations, gunners, zap-bots, grenade walkers, and the Entropy Turbine bosses
 - [Combat](combat.md) — shots, bursts, and collision
 - [Phases](session.md) — ten-wave phases and what a crossing does
-- [Menus](ui.md) — pause and the checkpoint shop
+- [Menus](ui.md) — the title, pause, and the checkpoint shop
 - [Audio](audio.md)
 - [Code and co-op](code.md)
 
@@ -22,11 +22,12 @@ The playable character is the Gunslinger. The Mage and the Steamist are specifie
 - The mouse aims on the horizontal world plane; holding the left button fires at a limited rate.
 - Shooting costs speed: player movement and the run animation play at two thirds of their normal rate while fire is held.
 - The animated player model's legs follow movement. Shooting poses and torso twist follow the mouse; extreme aim angles turn the whole body rather than twisting the spine beyond 90 degrees.
-- The camera views the full width of the route from a high angle. It scrolls forward only, and it slides sideways as the road bends. The pointer slides with that sideways move so the aim stays on the same ground point. Play captures the pointer for that slide and draws the aim mark. Pause, the shop, and the death screen release the capture. The player may retreat within the current view but cannot leave through its rear edge. Forward tracking resumes once the player crosses the camera's ground centerline.
+- The camera views the full width of the route from a high angle. It scrolls forward only, slides sideways as the road bends, and yaws to look along the bend. The yaw picks up, brakes into the heading, and settles the last of the turn slowly. The pointer slides with that move so the aim stays on the same ground point. Play captures the pointer for that slide and draws the aim mark. Pause, the shop, and the death screen release the capture. The player may retreat within the current view but cannot leave through its rear edge. Forward tracking resumes once the player crosses the camera's ground centerline.
 - The player starts at 1000 health, can die from enemy gunfire, and can restart with R. The HUD shows phase, wave, kills, points, survival time, two revolver chamber rings, and five thin green health blocks. Each block represents 20% of current maximum health; the filled count is rounded up, and spent blocks turn black.
 - Each phase has ten barricade waves. A brass crossing line after the tenth wave opens a checkpoint shop; Continue begins the next, harder phase.
-- Defeated enemies leave collectible point orbs. Scouts and zap-bots give 1 point, troopers 2, grenade walkers 3, and heavies 4. An enemy that managed to damage a player adds 1 point to its drop, once per enemy. Nearby orbs drift toward the player.
-- Escape pauses gameplay and opens Continue and Exit Game controls. The pause menu uses the same typography planned for later menus.
+- The window opens on a title screen. Continue starts the survival clock and the first wave.
+- Defeated enemies burst where they stood, then leave a point orb. The orb rises straight off that ground, starting at 5 m/s and gaining 5 m/s every 200 ms. At 75 metres its value is paid into the shared bank. Scouts and zap-bots give 1 point, troopers 2, grenade walkers 3, and heavies 4. An enemy that managed to damage a player adds 1 point to its drop, once per enemy. Every player draws on that same bank.
+- The title, pause, and shop share one frame and font pair. The title offers Continue. During a phase, Escape opens Continue and Exit Game.
 - Original short sounds mark the player's plasma fire, enemy gunfire, impacts, damage, death, and menu actions. A quiet machinery-and-wind loop fills the background and pauses with gameplay.
 - Zap-bots drive through the fight from the front of the view and off the bottom. The rising whine starts when a player enters the jolt's reach, about eight metres, and the cow then fires that jolt toward the player. A plate takes 1 off each hit, the Gunslinger's shot is 2, and one paired hit still drops the cow. A grenade walker joins the last wave of the first phase, and later waves only rarely. It walks a diagonal, turns ninety degrees off an obstacle, and stops for two seconds to lob four grenades when a player is within 16 metres. Red circles on the ground mark the 2 metre blasts. Its hit points are few, behind a shield of 4 that returns after 4 seconds down. A walker or a cow that has not advanced for a tenth of a second backs up, then goes on. A walker still stops to shoot during that backup. Barricades are built ahead of the view, and their gunners arrive as that cover reaches the top of the screen. Entropy Turbine bosses are specified and are not in this build.
 

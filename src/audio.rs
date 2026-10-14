@@ -104,7 +104,7 @@ pub fn play_ui(commands: &mut Commands, clip: &Handle<AudioSource>) {
 
 pub fn sync_gameplay_audio(session: Res<Session>, sinks: Query<&AudioSink, With<GameplayAudio>>) {
     for sink in &sinks {
-        if session.phase == Phase::Paused {
+        if session.phase == Phase::Paused || session.phase == Phase::Title {
             if !sink.is_paused() {
                 sink.pause();
             }

@@ -166,7 +166,7 @@ pub fn place_covers(
     let Some(camera) = cameras.iter().next() else {
         return;
     };
-    let center_z = camera.translation.z - camera::CAMERA_BACK_OFFSET;
+    let center_z = camera::framed_ground_z(camera);
     while let Some(wave) = director.planned_waves.front().copied() {
         if wave.z < center_z - OBSTACLE_PLACE_AHEAD {
             break;
@@ -374,7 +374,7 @@ pub fn spawn_reinforcements(
         return;
     };
     let mut live_count = enemies.iter().len();
-    let camera_center = camera.translation.z - camera::CAMERA_BACK_OFFSET;
+    let camera_center = camera::framed_ground_z(camera);
     for (cover, mut site) in &mut sites {
         if !site.spawned || site.reinforcements_sent || !site.reinforcement_planned {
             continue;

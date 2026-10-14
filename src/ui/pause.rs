@@ -123,7 +123,7 @@ pub fn toggle_pause(
     sounds: Res<SoundBank>,
     mut commands: Commands,
 ) {
-    if !keys.just_pressed(KeyCode::Escape) {
+    if !keys.just_pressed(KeyCode::Escape) || session.phase == Phase::Title {
         return;
     }
     audio::play_ui(&mut commands, &sounds.menu_click);
@@ -201,6 +201,25 @@ pub fn sync_pause_menu(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn escape_on_the_title_leaves_it_in_place() {
+        let mut app = App::new();
+        app.insert_resource(Session {
+            phase: Phase::Title,
+            ..default()
+        })
+        .insert_resource(ButtonInput::<KeyCode>::default())
+        .insert_resource(Time::<Virtual>::default())
+        .insert_resource(SoundBank::default())
+        .add_systems(Update, toggle_pause);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        app.update();
+        assert_eq!(app.world().resource::<Session>().phase, Phase::Title);
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+    }
 
     #[test]
     fn escape_pauses_and_resumes_game_time() {

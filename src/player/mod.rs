@@ -116,6 +116,35 @@ pub fn apply_progression(
     *stats = next;
 }
 
+/// The shop bought an upgrade, or the checkpoint is continuing.
+/// The gunslinger rebuilds its own health and revolver.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct GearRefresh {
+    pub refill: bool,
+}
+
+pub fn refresh_gear(
+    mut requests: MessageReader<GearRefresh>,
+    mut players: Query<(
+        &PlayerProgression,
+        &mut PlayerStats,
+        &mut Health,
+        &mut GunslingerWeapon,
+    )>,
+) {
+    for request in requests.read().copied() {
+        for (progression, mut stats, mut health, mut weapon) in &mut players {
+            apply_progression(
+                *progression,
+                &mut stats,
+                &mut health,
+                &mut weapon,
+                request.refill,
+            );
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct RevolverDrum {
     pub chambers: Vec<bool>,

@@ -14,14 +14,34 @@ mod gunner;
 mod rifle;
 mod zap_bot;
 
-pub use behavior::{Drift, separate_enemies, separate_from_cover, walk_grenadiers};
+pub use behavior::{
+    BackupStarted, Drift, WalkerHold, separate_enemies, separate_from_cover, walk_grenadiers,
+};
 pub use encounter::{
     EncounterDirector, WAVES_PER_PHASE, place_covers, spawn_groups, spawn_reinforcements,
 };
 pub use grenadier::{Grenadier, VolleyPiece, aim_grenadiers, fly_grenades};
-pub use gunner::{apply_volleys, cleanup_behind_camera, move_enemies, shoot_enemies};
+pub use gunner::{
+    ShotsRecalled, apply_volleys, cleanup_behind_camera, move_enemies, peel_backups, shoot_enemies,
+};
 pub use rifle::{Rifle, RifleAim, RoundFired, fire_rifles};
-pub use zap_bot::{ZapBot, drive_zap_bots, spawn_zap_bots};
+pub use zap_bot::{JoltCue, ZapBot, charge_jolts, drive_zap_bots, spawn_zap_bots};
+
+/// A player was hurt. The machine that did it marks its own bounty.
+pub fn credit_hits(
+    mut notices: MessageReader<crate::ability::Notice>,
+    mut rewards: Query<&mut EnemyReward>,
+) {
+    for notice in notices.read().copied() {
+        let crate::ability::Notice::Hurt { player: true, by } = notice else {
+            continue;
+        };
+        let Ok(mut reward) = rewards.get_mut(by) else {
+            continue;
+        };
+        reward.hit_player = true;
+    }
+}
 
 /// Which machine this is. Health, pace, and weapons live on its
 /// [`crate::character::CharacterDefinition`].

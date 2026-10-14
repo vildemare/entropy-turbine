@@ -204,7 +204,12 @@ mod tests {
         assert_eq!(options.grab_mode, CursorGrabMode::Locked);
         assert!(!options.visible);
 
-        for phase in [Phase::Paused, Phase::Checkpoint, Phase::PlayerDead] {
+        for phase in [
+            Phase::Title,
+            Phase::Paused,
+            Phase::Checkpoint,
+            Phase::PlayerDead,
+        ] {
             app.world_mut().resource_mut::<Session>().phase = phase;
             app.update();
             let options = app.world().get::<CursorOptions>(window).unwrap();

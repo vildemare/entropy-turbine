@@ -8,14 +8,14 @@ use bevy::ui::Pressed;
 use bevy::ui_widgets::Button;
 
 use crate::audio::{self, SoundBank};
-use crate::combat::{Health, Projectile};
+use crate::combat::Projectile;
 use crate::enemy::{Drift, EncounterDirector, Enemy, Grenadier, VolleyPiece, ZapBot};
 use crate::player::{
     self, GunslingerWeapon, PLAYER_Y, Player, PlayerProgression, PlayerStats, reload_wait_ms_for,
 };
 use crate::session::{Phase, Session};
 use crate::ui::UiFonts;
-use crate::world::camera::{CAMERA_BACK_OFFSET, FollowCamera};
+use crate::world::camera::{self, FollowCamera};
 use crate::world::route;
 use crate::world::visuals::Visuals;
 
@@ -239,7 +239,7 @@ pub fn place_checkpoint_line(
     let (Some(z), Some(camera)) = (director.checkpoint_z, camera.iter().next()) else {
         return;
     };
-    let center = camera.translation.z - CAMERA_BACK_OFFSET;
+    let center = camera::framed_ground_z(camera);
     if z < center - 45.0 {
         return;
     }
@@ -292,15 +292,8 @@ pub fn handle_checkpoint_button(
     sounds: Res<SoundBank>,
     mut commands: Commands,
     lines: Query<Entity, With<CheckpointLine>>,
-    mut players: Query<
-        (
-            &mut Health,
-            &PlayerProgression,
-            &mut PlayerStats,
-            &mut GunslingerWeapon,
-        ),
-        With<Player>,
-    >,
+    mut refresh: MessageWriter<player::GearRefresh>,
+    players: Query<&PlayerProgression, With<Player>>,
     mut colors: Query<(&Hovered, Has<Pressed>, &mut BackgroundColor), With<CheckpointContinue>>,
     pressed: Query<(), (Added<Pressed>, With<CheckpointContinue>)>,
 ) {
@@ -320,8 +313,8 @@ pub fn handle_checkpoint_button(
     for line in &lines {
         commands.entity(line).despawn();
     }
-    for (mut health, progression, mut stats, mut weapon) in &mut players {
-        player::apply_progression(*progression, &mut stats, &mut health, &mut weapon, true);
+    if players.iter().next().is_some() {
+        refresh.write(player::GearRefresh { refill: true });
     }
     director.next_phase();
     session.phase = Phase::Playing;
@@ -333,21 +326,14 @@ pub fn handle_shop_buttons(
     mut session: ResMut<Session>,
     sounds: Res<SoundBank>,
     mut commands: Commands,
-    mut players: Query<
-        (
-            &mut Health,
-            &mut PlayerProgression,
-            &mut PlayerStats,
-            &mut GunslingerWeapon,
-        ),
-        With<Player>,
-    >,
+    mut refresh: MessageWriter<player::GearRefresh>,
+    mut players: Query<&mut PlayerProgression, With<Player>>,
     buttons: Query<&ShopPurchase, (Added<Pressed>, With<Button>)>,
 ) {
     if session.phase != Phase::Checkpoint {
         return;
     }
-    let Ok((mut health, mut progression, mut stats, mut weapon)) = players.single_mut() else {
+    let Ok(mut progression) = players.single_mut() else {
         return;
     };
     for purchase in &buttons {
@@ -364,7 +350,7 @@ pub fn handle_shop_buttons(
             UpgradeKind::Capacity => progression.capacity_level += 1,
             UpgradeKind::Recharge => progression.reload_level += 1,
         }
-        player::apply_progression(*progression, &mut stats, &mut health, &mut weapon, false);
+        refresh.write(player::GearRefresh { refill: false });
     }
 }
 
@@ -429,7 +415,11 @@ mod tests {
         .insert_resource(EncounterDirector::default())
         .insert_resource(Time::<Virtual>::default())
         .insert_resource(SoundBank::default())
-        .add_systems(Update, handle_checkpoint_button);
+        .add_message::<player::GearRefresh>()
+        .add_systems(
+            Update,
+            (handle_checkpoint_button, player::refresh_gear).chain(),
+        );
         let player = app
             .world_mut()
             .spawn((
@@ -477,7 +467,8 @@ mod tests {
             ..default()
         })
         .insert_resource(SoundBank::default())
-        .add_systems(Update, handle_shop_buttons);
+        .add_message::<player::GearRefresh>()
+        .add_systems(Update, (handle_shop_buttons, player::refresh_gear).chain());
         let player = app
             .world_mut()
             .spawn((
@@ -528,7 +519,8 @@ mod tests {
             ..default()
         })
         .insert_resource(SoundBank::default())
-        .add_systems(Update, handle_shop_buttons);
+        .add_message::<player::GearRefresh>()
+        .add_systems(Update, (handle_shop_buttons, player::refresh_gear).chain());
         let player = app
             .world_mut()
             .spawn((

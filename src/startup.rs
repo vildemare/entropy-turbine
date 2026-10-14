@@ -3,14 +3,14 @@
 use bevy::prelude::*;
 
 use crate::audio;
-use crate::combat::{PointOrb, Projectile};
+use crate::combat::{PointOrb, Projectile, WreckBurst};
 use crate::enemy::{Cover, EncounterDirector, Enemy, Grenadier, VolleyPiece, ZapBot};
 use crate::player::animation::CharacterAsset;
 use crate::player::{self, PLAYER_Y, Player};
 use crate::session::{Phase, Session};
 use crate::ui::checkpoint::CheckpointLine;
 use crate::ui::{self, UiFonts, pause};
-use crate::world::camera::{CAMERA_BACK_OFFSET, CAMERA_HEIGHT, FollowCamera};
+use crate::world::camera::FollowCamera;
 use crate::world::route;
 use crate::world::visuals;
 
@@ -47,11 +47,13 @@ pub fn setup(
 
     commands.spawn((
         Camera3d::default(),
-        Transform::from_xyz(0.0, CAMERA_HEIGHT, CAMERA_BACK_OFFSET).looking_at(Vec3::ZERO, Vec3::Y),
+        crate::world::camera::pose_for_ground(0.0, 0.0),
         FollowCamera,
+        crate::world::camera::CameraRig::default(),
     ));
     ui::spawn_hud(&mut commands, &fonts);
     ui::cursor::spawn(&mut commands);
+    ui::title::spawn(&mut commands, &fonts);
     pause::spawn(&mut commands, &fonts);
     ui::checkpoint::spawn(&mut commands, &fonts);
     player::ammo_hud::spawn(&mut commands, &fonts);
@@ -71,9 +73,13 @@ pub fn restart(
     volleys: Query<Entity, With<VolleyPiece>>,
     bullets: Query<Entity, With<Projectile>>,
     orbs: Query<Entity, With<PointOrb>>,
+    bursts: Query<Entity, With<WreckBurst>>,
     covers: Query<Entity, With<Cover>>,
     lines: Query<Entity, With<CheckpointLine>>,
-    mut cameras: Query<&mut Transform, With<crate::world::camera::FollowCamera>>,
+    mut cameras: Query<
+        (&mut Transform, &mut crate::world::camera::CameraRig),
+        With<crate::world::camera::FollowCamera>,
+    >,
 ) {
     if session.phase != Phase::PlayerDead || !keys.just_pressed(KeyCode::KeyR) {
         return;
@@ -86,6 +92,7 @@ pub fn restart(
         .chain(volleys.iter())
         .chain(bullets.iter())
         .chain(orbs.iter())
+        .chain(bursts.iter())
         .chain(covers.iter())
         .chain(lines.iter())
     {
@@ -93,12 +100,9 @@ pub fn restart(
     }
     *session = Session::default();
     *director = EncounterDirector::default();
-    for mut camera in &mut cameras {
-        camera.translation = Vec3::new(
-            0.0,
-            crate::world::camera::CAMERA_HEIGHT,
-            crate::world::camera::CAMERA_BACK_OFFSET,
-        );
+    for (mut camera, mut rig) in &mut cameras {
+        *camera = crate::world::camera::pose_for_ground(0.0, 0.0);
+        rig.yaw_rate = 0.0;
     }
     player::spawn_player(&mut commands, &character, Vec3::new(0.0, PLAYER_Y, 0.0));
 }
