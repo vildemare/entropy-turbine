@@ -24,6 +24,8 @@ fn max_chambers_per_gun() -> usize {
 pub struct AmmoHud {
     displayed_angle: [f32; 2],
     capacity: [usize; 2],
+    loaded: [usize; 2],
+    full_flash: [f32; 2],
 }
 
 #[derive(Component)]
@@ -45,6 +47,8 @@ pub fn spawn(commands: &mut Commands, fonts: &UiFonts) {
             AmmoHud {
                 displayed_angle: [0.0; 2],
                 capacity: [3; 2],
+                loaded: [3; 2],
+                full_flash: [0.0; 2],
             },
             Node {
                 position_type: PositionType::Absolute,
@@ -126,7 +130,10 @@ pub fn update(
     time: Res<Time>,
     weapons: Query<&GunslingerWeapon, With<LocalPlayer>>,
     mut hud: Query<&mut AmmoHud>,
-    mut rings: Query<(&DrumRing, &mut Node), Without<ChamberIcon>>,
+    mut rings: Query<
+        (&DrumRing, &mut Node, &mut BackgroundColor, &mut BorderColor),
+        Without<ChamberIcon>,
+    >,
     mut icons: Query<
         (
             &ChamberIcon,
@@ -142,6 +149,11 @@ pub fn update(
     };
     for gun in 0..2 {
         let count = weapon.drums[gun].chambers.len();
+        let loaded = weapon.drums[gun]
+            .chambers
+            .iter()
+            .filter(|&&chamber| chamber)
+            .count();
         let target = weapon.drums[gun].spin_steps as f32 * TAU / count as f32;
         if hud.capacity[gun] != count {
             hud.displayed_angle[gun] = target;
@@ -150,13 +162,29 @@ pub fn update(
             hud.displayed_angle[gun] +=
                 (target - hud.displayed_angle[gun]).clamp(0.0, time.delta_secs() * 17.0);
         }
+        if loaded == count && hud.loaded[gun] < count {
+            hud.full_flash[gun] = 1.0;
+        } else {
+            hud.full_flash[gun] = (hud.full_flash[gun] - time.delta_secs() * 2.8).max(0.0);
+        }
+        hud.loaded[gun] = loaded;
     }
-    for (ring, mut node) in &mut rings {
-        let diameter = ring_diameter(weapon.drums[ring.0].chambers.len());
+    for (ring, mut node, mut background, mut border) in &mut rings {
+        let flash = hud.full_flash[ring.0];
+        let kick = (flash * std::f32::consts::PI).sin().max(0.0) * 7.0;
+        let diameter = ring_diameter(weapon.drums[ring.0].chambers.len()) + kick;
         node.width = px(diameter);
         node.height = px(diameter);
         node.left = px(DRUM_CENTER - diameter * 0.5);
         node.top = px(DRUM_CENTER - diameter * 0.5);
+        if flash > 0.0 {
+            *background =
+                BackgroundColor(Color::srgb(0.06 + flash * 0.14, 0.06 + flash * 0.09, 0.055));
+            *border = BorderColor::all(Color::srgb(1.0, 0.74 + flash * 0.18, 0.25));
+        } else {
+            *background = BackgroundColor(Color::srgb(0.06, 0.06, 0.055));
+            *border = BorderColor::all(Color::srgb(0.68, 0.49, 0.26));
+        }
     }
     for (icon, mut node, mut background, mut visibility) in &mut icons {
         let drum = &weapon.drums[icon.gun];
@@ -172,7 +200,8 @@ pub fn update(
         node.left = px(DRUM_CENTER + orbit * angle.cos() - CHAMBER_SIZE * 0.5);
         node.top = px(DRUM_CENTER + orbit * angle.sin() - CHAMBER_SIZE * 0.5);
         *background = BackgroundColor(if drum.chambers[icon.index] {
-            Color::WHITE
+            let flash = hud.full_flash[icon.gun];
+            Color::srgb(1.0, 1.0 - flash * 0.16, 1.0 - flash * 0.68)
         } else {
             Color::BLACK
         });

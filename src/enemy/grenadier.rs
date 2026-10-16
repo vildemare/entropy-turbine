@@ -15,7 +15,7 @@ use super::{EnemyKind, EnemyReward};
 use crate::ability::Struck;
 use crate::audio::{self, SoundBank};
 use crate::character::{CharacterDefinition, LauncherSpec};
-use crate::combat::{Delivery, EnergyShield, Faction, Health, HitCircle, Material};
+use crate::combat::{BlastRecovery, Delivery, EnergyShield, Faction, Health, HitCircle, Material};
 use crate::player::Player;
 use crate::session::{Phase, Session};
 use crate::world::camera::{self, FollowCamera};
@@ -115,7 +115,10 @@ pub fn aim_grenadiers(
     cameras: Query<(&Camera, &Transform), (With<FollowCamera>, Without<Grenadier>)>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut holds: MessageWriter<WalkerHold>,
-    mut walkers: Query<(Entity, &Transform, &mut Grenadier, &WalkerHeading), Without<Player>>,
+    mut walkers: Query<
+        (Entity, &Transform, &mut Grenadier, &WalkerHeading),
+        (Without<Player>, Without<BlastRecovery>),
+    >,
     players: Query<&Transform, (With<Player>, Without<Grenadier>)>,
 ) {
     if session.phase != Phase::Playing {
@@ -289,9 +292,11 @@ fn tick_gait(
         let timer = timer - dt;
         if timer <= 0.0 {
             let weapon = launcher();
-            let aim = nearest.unwrap_or_else(|| {
-                position + Vec3::new(heading.x, 0.0, heading.y) * (weapon.engage * 0.65)
-            });
+            let aim = nearest
+                .map(|player| aim_within_reach(position, player))
+                .unwrap_or_else(|| {
+                    position + Vec3::new(heading.x, 0.0, heading.y) * (weapon.engage * 0.65)
+                });
             let spots = dispersion(aim, aim - position, &mut walker.rng);
             walker.gait =
                 Gait::Reloading((weapon.reload_each * u32::from(weapon.count)).as_secs_f32());
@@ -371,6 +376,16 @@ fn nearest_player(position: Vec3, players: &[Vec3]) -> Option<Vec3> {
 fn in_reach(position: Vec3, player: Vec3) -> bool {
     let reach = launcher().engage;
     flat_distance_sq(position, player) <= reach * reach
+}
+
+fn aim_within_reach(position: Vec3, player: Vec3) -> Vec3 {
+    let offset = Vec3::new(player.x - position.x, 0.0, player.z - position.z);
+    let reach = launcher().engage;
+    if offset.length_squared() <= reach * reach {
+        return player;
+    }
+    let aim = position + offset.normalize() * reach;
+    Vec3::new(aim.x, player.y, aim.z)
 }
 
 fn flat_distance_sq(from: Vec3, to: Vec3) -> f32 {
@@ -650,6 +665,33 @@ mod tests {
         assert!(
             walked.position.distance(thrown.position) > 0.2,
             "reload should leave the walker moving"
+        );
+    }
+
+    #[test]
+    fn a_locked_player_cannot_pull_the_volley_beyond_the_engagement_range() {
+        let mut walker = sample();
+        let mut heading = Vec2::Y;
+        let position = Vec3::new(0.0, blueprint().height(), 0.0);
+        let locked = [Vec3::new(0.0, 0.8, launcher().engage - 1.0)];
+        let held = advance(&mut walker, &mut heading, position, &locked, &[], 0.5);
+        assert!(held.volley.is_none());
+
+        let escaped = [Vec3::new(0.0, 0.8, launcher().engage + 30.0)];
+        let thrown = advance(
+            &mut walker,
+            &mut heading,
+            held.position,
+            &escaped,
+            &[],
+            launcher().aim.as_secs_f32() - 0.5,
+        );
+        let spots = thrown.volley.expect("volley");
+        let center = spots.iter().copied().sum::<Vec3>() / spots.len() as f32;
+        let range = Vec2::new(center.x - position.x, center.z - position.z).length();
+        assert!(
+            (range - launcher().engage).abs() < 0.02,
+            "volley center was {range} metres away"
         );
     }
 

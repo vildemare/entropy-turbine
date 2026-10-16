@@ -1,11 +1,11 @@
 //! Slow tracked machines that cross the field and throw a charged jolt.
 //!
 //! They are not the gunner squads and not the Entropy Turbine bosses. A cow
-//! looks a short distance along its lane and slides to the clearer side of a
-//! barricade instead of stopping on it. The prongs stay dark until a player
-//! enters the jolt's reach, and that entry starts the whine. Local +Z is the
-//! direction of travel. A finished charge fires toward the nearest player, or
-//! along local +Z when the lane is empty.
+//! looks ahead along its lane and commits to a clear route around the whole
+//! cover footprint instead of steering back into it. The prongs stay dark
+//! until a player enters the jolt's reach, and that entry starts the whine.
+//! Local +Z is the direction of travel. A finished charge fires toward the
+//! nearest player, or along local +Z when the lane is empty.
 
 use std::time::Duration;
 
@@ -16,7 +16,9 @@ use super::behavior::{self, Drift};
 use super::{Cover, EnemyKind, EnemyReward};
 use crate::audio::{self, SoundBank};
 use crate::character::{CharacterDefinition, ZapperSpec};
-use crate::combat::{Damage, Delivery, Faction, Health, HitCircle, Lifetime, Material, Projectile};
+use crate::combat::{
+    BlastRecovery, Damage, Delivery, Faction, Health, HitCircle, Lifetime, Material, Projectile,
+};
 use crate::player::Player;
 use crate::session::{Phase, Session};
 use crate::world::camera::{self, FollowCamera};
@@ -50,6 +52,7 @@ pub struct ZapBot {
     pub radius: f32,
     lane: f32,
     side: f32,
+    avoidance: Option<behavior::TrackAvoidance>,
     drift: Drift,
     charge: f32,
     rest: f32,
@@ -123,6 +126,7 @@ pub fn spawn_zap_bots(
                 radius: hull.radius(),
                 lane,
                 side,
+                avoidance: None,
                 drift: Drift::default(),
                 charge: 0.0,
                 rest: 0.0,
@@ -157,7 +161,10 @@ pub fn drive_zap_bots(
     cameras: Query<(&Camera, &Transform), (With<FollowCamera>, Without<ZapBot>)>,
     windows: Query<&Window, With<PrimaryWindow>>,
     covers: Query<(&Transform, &Cover), Without<ZapBot>>,
-    mut bots: Query<(Entity, &mut Transform, &mut ZapBot), Without<Player>>,
+    mut bots: Query<
+        (Entity, &mut Transform, &mut ZapBot),
+        (Without<Player>, Without<BlastRecovery>),
+    >,
     players: Query<&Transform, (With<Player>, Without<ZapBot>)>,
 ) {
     if session.phase != Phase::Playing {
@@ -187,21 +194,32 @@ pub fn drive_zap_bots(
             continue;
         }
         let position = transform.translation;
-        let lane_x = route::centerline_x(position.z + 6.0) + bot.lane * 7.0;
+        let lane_offset = bot.lane * 7.0;
         let max_step = speed * dt;
-        let (planned, chosen_side) =
-            behavior::step_tracks(position, bot.radius, lane_x, bot.side, max_step, &blocks);
+        let radius = bot.radius;
+        let side = bot.side;
+        let back_step = behavior::reverse_step(&bot.drift, side, max_step);
+        let (mut next, chosen_side) = if let Some(back) = back_step {
+            // A route calculated while reversing would already be stale when
+            // the backup ends. Replan from the position actually reached.
+            bot.avoidance = None;
+            (position + back, side)
+        } else {
+            behavior::step_tracks(
+                position,
+                radius,
+                lane_offset,
+                side,
+                max_step,
+                &blocks,
+                &mut bot.avoidance,
+            )
+        };
         // A cow keeps driving through the backup. It does not stand to shoot.
         bot.drift.from = position;
         bot.drift.fresh = true;
         bot.drift.trying = true;
-        let mut next = if let Some(back) = behavior::reverse_step(&bot.drift, bot.side, max_step) {
-            bot.drift.step = Vec2::new(back.x, back.z);
-            position + back
-        } else {
-            bot.drift.step = Vec2::new(planned.x - position.x, planned.z - position.z);
-            planned
-        };
+        bot.drift.step = Vec2::new(next.x - position.x, next.z - position.z);
         next.x = route::clamp_actor_x(next.x, next.z, bot.radius);
         next.y = position.y;
         for (cover_transform, cover) in &covers {
@@ -212,6 +230,7 @@ pub fn drive_zap_bots(
         let started = behavior::note_drift(&mut bot.drift, moved, dt);
         if started {
             bot.side = -bot.side;
+            bot.avoidance = None;
         } else if bot.drift.backing <= 0.0 && bot.drift.stalled == 0.0 {
             bot.side = chosen_side;
         }
@@ -450,7 +469,9 @@ mod tests {
 
     #[test]
     fn an_open_lane_carries_a_cow_downscreen() {
-        let (next, side) = behavior::step_tracks(Vec3::ZERO, 0.9, 0.0, 1.0, 0.4, &[]);
+        let mut avoidance = None;
+        let (next, side) =
+            behavior::step_tracks(Vec3::ZERO, 0.9, 0.0, 1.0, 0.4, &[], &mut avoidance);
         assert!(next.z > 0.2);
         assert_eq!(side, 1.0);
     }
@@ -459,7 +480,9 @@ mod tests {
     fn a_barricade_ahead_pushes_the_cow_to_one_side() {
         let blocks = [barricade(1.2)];
         let start = Vec3::new(0.0, 0.0, -0.5);
-        let (next, side) = behavior::step_tracks(start, 0.9, 0.0, 1.0, 0.4, &blocks);
+        let mut avoidance = None;
+        let (next, side) =
+            behavior::step_tracks(start, 0.9, 0.0, 1.0, 0.4, &blocks, &mut avoidance);
         assert!(next.x.abs() > 0.05, "x {}", next.x);
         assert!(next.z > start.z);
         assert_eq!(side.abs(), 1.0);
@@ -470,11 +493,175 @@ mod tests {
     fn a_cow_turns_out_several_metres_before_the_barricade() {
         let start = Vec3::new(0.0, 0.0, -6.0);
         let blocks = [barricade(0.0)];
-        let (straight, _) = behavior::step_tracks(start, 0.9, 0.0, 1.0, 0.5, &[]);
-        let (next, side) = behavior::step_tracks(start, 0.9, 0.0, 1.0, 0.5, &blocks);
+        let mut open_avoidance = None;
+        let (straight, _) =
+            behavior::step_tracks(start, 0.9, 0.0, 1.0, 0.5, &[], &mut open_avoidance);
+        let mut avoidance = None;
+        let (next, side) =
+            behavior::step_tracks(start, 0.9, 0.0, 1.0, 0.5, &blocks, &mut avoidance);
         assert!(next.x.abs() > straight.x.abs() + 0.08, "x {}", next.x);
         assert!(next.z > start.z);
         assert_eq!(side.abs(), 1.0);
+    }
+
+    #[test]
+    fn a_cow_commits_to_the_detour_until_the_barricade_is_behind_it() {
+        let blocks = [barricade(8.0)];
+        let mut position = Vec3::ZERO;
+        let mut avoidance = None;
+        let mut side = 1.0;
+        let mut passed_face = false;
+        let mut detoured = false;
+
+        for _ in 0..180 {
+            let (next, chosen) =
+                behavior::step_tracks(position, 0.9, 0.0, side, 0.15, &blocks, &mut avoidance);
+            assert!(
+                !behavior::tracks_blocked(next, 0.9, &blocks),
+                "cow entered the barricade at {next}"
+            );
+            if (7.5..=8.5).contains(&next.z) {
+                passed_face = true;
+                detoured |= next.x.abs() > 3.6;
+            }
+            position = next;
+            side = chosen;
+        }
+
+        assert!(passed_face, "cow never passed the barricade");
+        assert!(detoured, "cow did not keep clear while alongside it");
+        assert!(position.z > 20.0, "cow stopped at z {}", position.z);
+        assert!(avoidance.is_none(), "detour stayed active after the pass");
+        assert!(
+            position.x.abs() < 3.0,
+            "cow did not return to its lane: {position}"
+        );
+    }
+
+    #[test]
+    fn a_cow_plans_around_the_whole_cover_cluster() {
+        let blocks = [
+            barricade(8.0),
+            Footprint {
+                center: Vec3::new(4.8, 0.0, 9.0),
+                half_width: 1.1,
+                half_depth: 1.0,
+            },
+            Footprint {
+                center: Vec3::new(-5.4, 0.0, 10.0),
+                half_width: 0.8,
+                half_depth: 0.8,
+            },
+        ];
+        let mut position = Vec3::ZERO;
+        let mut avoidance = None;
+        let mut side = 1.0;
+        let mut planned = false;
+
+        for _ in 0..220 {
+            let (next, chosen) =
+                behavior::step_tracks(position, 0.9, 0.0, side, 0.15, &blocks, &mut avoidance);
+            planned |= avoidance.is_some();
+            assert!(
+                !behavior::tracks_blocked(next, 0.9, &blocks),
+                "cow entered clustered cover at {next}"
+            );
+            position = next;
+            side = chosen;
+        }
+
+        assert!(planned, "cluster never produced a committed route");
+        assert!(
+            position.z > 24.0,
+            "cow failed to clear the cluster: {position}"
+        );
+        assert!(avoidance.is_none(), "cluster route never completed");
+    }
+
+    #[test]
+    fn a_cow_crosses_a_complete_wave_on_a_bending_road() {
+        let wave_z = -30.0;
+        for wave_offset in [-5.0, 0.0, 5.0] {
+            for lane_offset in [-5.5, 0.0, 5.5] {
+                let blocks = [
+                    Footprint {
+                        center: Vec3::new(route::centerline_x(wave_z) + wave_offset, 0.0, wave_z),
+                        half_width: 2.7,
+                        half_depth: 0.5,
+                    },
+                    Footprint {
+                        center: Vec3::new(
+                            route::centerline_x(wave_z - 0.15) + wave_offset - 2.6,
+                            0.0,
+                            wave_z - 0.15,
+                        ),
+                        half_width: 0.65,
+                        half_depth: 0.7,
+                    },
+                    Footprint {
+                        center: Vec3::new(
+                            route::centerline_x(wave_z - 0.15) + wave_offset + 2.6,
+                            0.0,
+                            wave_z - 0.15,
+                        ),
+                        half_width: 0.65,
+                        half_depth: 0.7,
+                    },
+                    Footprint {
+                        center: Vec3::new(
+                            route::centerline_x(wave_z + 9.0) - 7.5,
+                            0.0,
+                            wave_z + 9.0,
+                        ),
+                        half_width: 1.05,
+                        half_depth: 0.95,
+                    },
+                    Footprint {
+                        center: Vec3::new(
+                            route::centerline_x(wave_z - 11.0) + 7.5,
+                            0.0,
+                            wave_z - 11.0,
+                        ),
+                        half_width: 1.05,
+                        half_depth: 0.95,
+                    },
+                ];
+                let start_z = wave_z - 18.0;
+                let mut position =
+                    Vec3::new(route::centerline_x(start_z) + lane_offset, 0.0, start_z);
+                let mut avoidance = None;
+                let mut side = 1.0;
+
+                for _ in 0..300 {
+                    let (next, chosen) = behavior::step_tracks(
+                        position,
+                        0.9,
+                        lane_offset,
+                        side,
+                        0.15,
+                        &blocks,
+                        &mut avoidance,
+                    );
+                    assert!(
+                        !behavior::tracks_blocked(next, 0.9, &blocks),
+                        "cow entered wave cover at {next}; wave {wave_offset}, lane {lane_offset}"
+                    );
+                    assert!(
+                        (next.x - route::centerline_x(next.z)).abs()
+                            <= route::ROAD_HALF_WIDTH - 0.9,
+                        "cow left the road at {next}; wave {wave_offset}, lane {lane_offset}"
+                    );
+                    position = next;
+                    side = chosen;
+                }
+
+                assert!(
+                    position.z > wave_z + 16.0,
+                    "cow did not cross the wave: {position}; wave {wave_offset}, lane {lane_offset}"
+                );
+                assert!(avoidance.is_none(), "wave route never completed");
+            }
+        }
     }
 
     #[test]
@@ -622,6 +809,20 @@ mod tests {
     #[test]
     fn a_cow_backs_up_without_dropping_its_charge() {
         let mut bot = sample_bot();
+        let blocks = [barricade(5.0)];
+        let _ = behavior::step_tracks(
+            Vec3::ZERO,
+            bot.radius,
+            0.0,
+            bot.side,
+            0.1,
+            &blocks,
+            &mut bot.avoidance,
+        );
+        assert!(
+            bot.avoidance.is_some(),
+            "the setup needs a route to abandon"
+        );
         bot.drift.backing = behavior::UNSTICK.reverse;
         bot.drift.attempt = Vec2::new(0.0, 1.0);
         let mut app = App::new();
@@ -656,6 +857,10 @@ mod tests {
         let bot = app.world().get::<ZapBot>(cow).unwrap();
         assert!(bot.voiced, "the charge keeps rising through the backup");
         assert!(bot.charge > 0.0);
+        assert!(
+            bot.avoidance.is_none(),
+            "the cow must replan after its backup"
+        );
     }
 
     #[test]
@@ -875,6 +1080,7 @@ mod tests {
             radius: cow().radius(),
             lane: 0.0,
             side: 1.0,
+            avoidance: None,
             drift: Drift::default(),
             charge: 0.0,
             rest: 0.0,

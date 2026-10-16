@@ -44,13 +44,15 @@ pub enum Delivery {
     Energy,
 }
 
+/// Hit points on the shared combat scale where player starting health is 1000.
 #[derive(Component)]
 pub struct Health(pub u32);
 
 #[derive(Component, Default)]
 pub struct HitCooldown(pub f32);
 
-/// A pool that spends itself against a hit, then stays down for `down_for` seconds.
+/// A pool on the shared health/damage scale that spends itself against a hit,
+/// then stays down for `down_for` seconds.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct EnergyShield {
     pub remaining: u32,
@@ -145,7 +147,10 @@ pub enum Notice {
     /// A flat reduction kept some of this hit.
     Armor,
     /// A live shield spent some of its pool on this hit.
-    Shield,
+    Shield {
+        target: Entity,
+        broken: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -239,7 +244,7 @@ fn handle(
                 hit.consumed = true;
             }
         }
-        Ability::EnergyShield => absorb_with_shield(shield, hit, notices),
+        Ability::EnergyShield => absorb_with_shield(entity, shield, hit, notices),
         Ability::HitPoints => take_health(entity, false, health, hit, notices),
         Ability::PlayerLife => take_health(entity, true, health, hit, notices),
         Ability::Solid => {
@@ -250,6 +255,7 @@ fn handle(
 }
 
 fn absorb_with_shield(
+    entity: Entity,
     shield: &mut Option<Mut<EnergyShield>>,
     hit: &mut OpenHit,
     notices: &mut Vec<Notice>,
@@ -260,9 +266,13 @@ fn absorb_with_shield(
     if shield.down > 0.0 || shield.remaining == 0 {
         return;
     }
-    let absorbed = hit.damage.min(shield.remaining);
+    let before = shield.remaining;
+    let absorbed = hit.damage.min(before);
     if absorbed > 0 {
-        notices.push(Notice::Shield);
+        notices.push(Notice::Shield {
+            target: entity,
+            broken: absorbed == before,
+        });
     }
     shield.remaining -= absorbed;
     hit.damage -= absorbed;
@@ -528,8 +538,28 @@ mod tests {
             .id();
         app.world_mut().write_message(strike(shielded, 80));
         app.update();
-        assert_eq!(app.world().resource::<Heard>().0, vec![Notice::Shield]);
+        assert_eq!(
+            app.world().resource::<Heard>().0,
+            vec![Notice::Shield {
+                target: shielded,
+                broken: false,
+            }]
+        );
         assert_eq!(app.world().get::<Health>(shielded).unwrap().0, 100);
+
+        app.world_mut().resource_mut::<Heard>().0.clear();
+        app.world_mut().write_message(strike(shielded, 420));
+        app.update();
+        assert_eq!(
+            app.world().resource::<Heard>().0,
+            vec![Notice::Shield {
+                target: shielded,
+                broken: true,
+            }]
+        );
+        let shield = app.world().get::<EnergyShield>(shielded).unwrap();
+        assert_eq!(shield.remaining, 0);
+        assert!(shield.down > 0.0);
 
         app.world_mut().resource_mut::<Heard>().0.clear();
         {

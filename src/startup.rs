@@ -3,7 +3,7 @@
 use bevy::prelude::*;
 
 use crate::audio;
-use crate::combat::{PointOrb, Projectile, WreckBurst};
+use crate::combat::{CombatFlash, PointOrb, Projectile, WreckBurst};
 use crate::enemy::{Cover, EncounterDirector, Enemy, Grenadier, VolleyPiece, ZapBot};
 use crate::player::animation::CharacterAsset;
 use crate::player::{self, PLAYER_Y, Player};
@@ -26,7 +26,7 @@ pub fn setup(
     };
     commands.insert_resource(fonts.clone());
     audio::setup(&mut commands, &asset_server);
-    commands.insert_resource(visuals::load(&mut meshes, &mut materials));
+    commands.insert_resource(visuals::load(&asset_server, &mut meshes, &mut materials));
     let character = CharacterAsset::load(&asset_server);
     commands.insert_resource(character.clone());
     route::setup(&mut commands, &mut meshes, &mut materials);
@@ -52,6 +52,7 @@ pub fn setup(
         crate::world::camera::CameraRig::default(),
     ));
     ui::spawn_hud(&mut commands, &fonts);
+    crate::enemy::spawn_gene_hud(&mut commands);
     ui::cursor::spawn(&mut commands);
     ui::title::spawn(&mut commands, &fonts);
     pause::spawn(&mut commands, &fonts);
@@ -73,7 +74,7 @@ pub fn restart(
     volleys: Query<Entity, With<VolleyPiece>>,
     bullets: Query<Entity, With<Projectile>>,
     orbs: Query<Entity, With<PointOrb>>,
-    bursts: Query<Entity, With<WreckBurst>>,
+    effects: Query<Entity, Or<(With<WreckBurst>, With<CombatFlash>)>>,
     covers: Query<Entity, With<Cover>>,
     lines: Query<Entity, With<CheckpointLine>>,
     mut cameras: Query<
@@ -92,7 +93,7 @@ pub fn restart(
         .chain(volleys.iter())
         .chain(bullets.iter())
         .chain(orbs.iter())
-        .chain(bursts.iter())
+        .chain(effects.iter())
         .chain(covers.iter())
         .chain(lines.iter())
     {

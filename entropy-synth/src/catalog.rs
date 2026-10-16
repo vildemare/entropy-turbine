@@ -10,9 +10,9 @@ pub struct ExportItem {
 
 pub fn exported() -> Vec<ExportItem> {
     vec![
-        item("player_shot", player_shot(1.0, 1)),
-        item("player_shot_2", player_shot(0.86, 2)),
-        item("player_shot_3", player_shot(1.08, 3)),
+        item("player_shot", player_shot(1.0)),
+        item("player_shot_2", player_shot(0.86)),
+        item("player_shot_3", player_shot(1.08)),
         item("enemy_shot", enemy_shot(1.0, 4)),
         item("enemy_shot_2", enemy_shot(0.84, 5)),
         item("enemy_shot_3", enemy_shot(1.12, 6)),
@@ -25,6 +25,10 @@ pub fn exported() -> Vec<ExportItem> {
         item("zap", zap()),
         item("grenade_lob", grenade_lob()),
         item("grenade_blast", grenade_blast()),
+        item("empty_click", empty_click()),
+        item("cylinder_full", cylinder_full()),
+        item("enemy_blast", enemy_blast()),
+        item("shield_break", shield_break()),
         item("death", death()),
         item("menu_click", menu_click()),
         item("ambience", ambience()),
@@ -150,7 +154,7 @@ fn item(id: &'static str, sound: Sound) -> ExportItem {
     }
 }
 
-fn player_shot(pitch: f32, seed: u32) -> Sound {
+fn player_shot(pitch: f32) -> Sound {
     let hz = |frequency: f32| frequency * pitch;
 
     Sound::duration_secs(0.25)
@@ -501,6 +505,210 @@ fn grenade_blast() -> Sound {
                         .sustain(0.0)
                         .release(0.04),
                 ),
+        )
+}
+
+fn empty_click() -> Sound {
+    // A dry hammer fall with a small frame resonance, deliberately lower and
+    // shorter than the menu click.
+    Sound::duration_secs(0.11)
+        .layer(
+            Noise::white()
+                .seed(67)
+                .duration(0.012)
+                .high_pass(900.0)
+                .low_pass(4200.0)
+                .gain(0.28)
+                .envelope(Envelope::fast_decay()),
+        )
+        .layer(
+            Oscillator::triangle(420.0)
+                .sweep_to(210.0)
+                .duration(0.075)
+                .gain(0.22)
+                .envelope(Envelope::fast_decay()),
+        )
+        .layer(
+            Oscillator::square(1350.0)
+                .start_at(0.008)
+                .duration(0.008)
+                .gain(0.08),
+        )
+}
+
+fn cylinder_full() -> Sound {
+    // Five light ratchet teeth resolve into a lower lock. The rhythm is long
+    // enough to read as a cylinder, but short enough not to mask gunfire.
+    let mut sound = Sound::new();
+    for gainplus in 1..9 {
+        sound = sound
+            .append_layer(
+                Oscillator::triangle(22000.0)
+                    .sweep_to(38.0)
+                    .duration(0.02)
+                    .gain(0.15-(gainplus as f32*0.01))
+                    .envelope(
+                        Envelope::new()
+                            .attack(0.003)
+                            .decay(0.31)
+                            .sustain(0.04)
+                            .release(0.01),
+                    ),
+            )
+            .append_layer(
+                Noise::white().duration(0.02).gain(0.3).envelope(
+                    Envelope::new()
+                        .attack(0.04)
+                        .decay(0.05)
+                        .sustain(0.05)
+                        .release(0.01)
+                        .attack(0.10),
+                ),
+            )
+    }
+
+    for (index, pitch) in [0.03, 0.05, 0.10, 0.20, 0.4, 0.9].into_iter().enumerate() {
+        sound = sound
+            .append_layer(
+                Oscillator::triangle(22000.0)
+                    .sweep_to(38.0)
+                    .duration(0.03)
+                    .gain(0.12)
+                    .envelope(
+                        Envelope::new()
+                            .attack(0.003)
+                            .decay(0.31)
+                            .sustain(0.04)
+                            .release(0.01),
+                    ),
+            )
+            .append_layer(Noise::white().duration(pitch).gain(0.01))
+            .append_layer(
+                Noise::white().duration(0.02).gain(0.25).envelope(
+                    Envelope::new()
+                        .attack(0.04)
+                        .decay(0.05)
+                        .sustain(0.05)
+                        .release(0.01)
+                        .attack(0.10),
+                ),
+            )
+    }
+    sound
+}
+
+fn enemy_blast() -> Sound {
+    // Low pressure, torn metal, then loose debris. This sits below the short
+    // hit pings so a destroyed machine closes the sound rather than adding
+    // another high transient.
+    Sound::duration_secs(0.72)
+        .layer(
+            Oscillator::sine(105.0)
+                .sweep_to(38.0)
+                .duration(0.48)
+                .gain(0.48)
+                .envelope(
+                    Envelope::new()
+                        .attack(0.003)
+                        .decay(0.31)
+                        .sustain(0.04)
+                        .release(0.14),
+                ),
+        )
+        .layer(
+            Noise::white()
+                .sweep_to(38.0)
+                .duration(0.55)
+                .gain(0.66)
+                .envelope(
+                    Envelope::new()
+                        .attack(0.22)
+                        .decay(0.21)
+                        .sustain(0.20)
+                        .release(0.45),
+                ),
+        )
+        .layer(
+            Noise::white()
+                .seed(73)
+                .duration(0.19)
+                .low_pass(1300.0)
+                .gain(0.34)
+                .envelope(
+                    Envelope::new()
+                        .attack(0.001)
+                        .decay(0.14)
+                        .sustain(0.0)
+                        .release(0.04),
+                ),
+        )
+        .layer(
+            Noise::white()
+                .seed(79)
+                .start_at(0.16)
+                .duration(0.42)
+                .high_pass(900.0)
+                .low_pass(3600.0)
+                .gain(0.10)
+                .envelope(
+                    Envelope::new()
+                        .attack(0.01)
+                        .decay(0.18)
+                        .sustain(0.22)
+                        .release(0.18),
+                ),
+        )
+        .layer(
+            Oscillator::triangle(120.0)
+                .start_at(0.22)
+                .duration(0.025)
+                .gain(0.10),
+        )
+        .layer(
+            Oscillator::triangle(100.0)
+                .start_at(0.39)
+                .duration(0.010)
+                .gain(0.08),
+        )
+}
+
+fn shield_break() -> Sound {
+    Sound::duration_secs(0.52)
+        .layer(
+            Oscillator::sine(1320.0)
+                .sweep_to(210.0)
+                .duration(0.34)
+                .gain(0.28)
+                .envelope(
+                    Envelope::new()
+                        .attack(0.002)
+                        .decay(0.24)
+                        .sustain(0.0)
+                        .release(0.08),
+                ),
+        )
+        .layer(
+            Oscillator::sine(92.0)
+                .start_at(0.025)
+                .sweep_to(46.0)
+                .duration(0.36)
+                .gain(0.36)
+                .envelope(
+                    Envelope::new()
+                        .attack(0.004)
+                        .decay(0.25)
+                        .sustain(0.0)
+                        .release(0.08),
+                ),
+        )
+        .layer(
+            Noise::white()
+                .seed(83)
+                .duration(0.20)
+                .high_pass(1600.0)
+                .low_pass(6200.0)
+                .gain(0.20)
+                .envelope(Envelope::fast_decay()),
         )
 }
 

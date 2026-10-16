@@ -25,9 +25,9 @@ shot still stops it during that backup, the same as on any other step.
 
 Start with a few readable variants:
 
-- **Scout:** small, fast, falls to one player hit.
-- **Trooper:** standard ranged attacker, takes a couple of hits.
-- **Heavy:** larger, slower, and needs several hits.
+- **Scout:** 300 health; small, fast, and falls to one paired player shot.
+- **Trooper:** 600 health; standard ranged attacker, taking two pairs.
+- **Heavy:** 1500 health; larger, slower, and needs four pairs.
 
 The current variants use assembled low-poly gunners with coats, helmets, visors, brass tanks, and firearms. Their
 proportions and colors distinguish the three roles; these temporary visuals can later be replaced with original
@@ -37,6 +37,12 @@ Enemy shots travel at 13 metres per second. That is slow enough to step aside fr
 to clear. Damage stays 150, 200, and 300. Later phases can raise this speed when the field is meant to become a
 struggle.
 
+## Evolutionary machines
+
+Each wave also fields one experimental machine. Its 300 health, speed, collision size, sight, damage, and reward are the same as a scout's; only its inherited behavior differs. It fires smaller yellow rounds without a magazine, with 300 milliseconds as the fastest possible interval. The first population has deliberately uncertain trigger control, including one trigger-happy explorer so the lineage has a hit signal from which to learn.
+
+Twelve weights select its trigger response, route preference, flank side, and cover hesitation. Fitness strongly rewards hitting the player, also rewards time alive and distance travelled, and penalizes damage received. At the end of a phase the best half become parents. Half of the next population are direct descendants, half have two weights mutated, and the resulting ten genomes are shuffled across the next phase's waves. The ten circles above the lower-left controls show the current population; four colored spots in each circle encode its twelve weights in groups of three.
+
 ## Zap-bots
 
 In this build. These are the slow electric cows: low tracked hulls with a brass battery box and two copper prongs.
@@ -45,12 +51,13 @@ They are not Entropy Turbines, and they are not a small version of the boss.
 They spawn every several seconds from ahead of the view, a few alive at once, while the gunner waves keep their own
 schedule. Each one picks a lane and drives down the road until it leaves off the bottom of the screen. Barricades and
 rubble are obstacles, and those obstacles are already built before the cow reaches them. A cow looks about fourteen
-metres ahead and starts turning toward the clearer side before it reaches the cover, so the path bends around the
-obstacle instead of kissing it. When a cow is trying to drive and has not advanced for a tenth of a second, it backs
-up and peels toward the other side, then takes up its lane again. That backup is still driving: the cow does not
-stop, and a charge that is due keeps rising and fires.
+metres along its planned lane, checks both sides against every cover footprint and the road edge, and commits to a
+two-waypoint detour on the shorter clear side. It stays outside the obstacle cluster until its tracks have passed the
+far edge, then takes up its lane again. When a cow is trying to drive and has not advanced for a tenth of a second, it
+abandons that route, backs up, and replans toward the other side. That backup is still driving: the cow does not stop,
+and a charge that is due keeps rising and fires.
 
-Each cow wears a plate that takes 1 off a hit. The Gunslinger's round is 2, so 1 gets through, and the plate rings when it does. Health is 2, so one paired hit still drops the cow. They are extra bodies, and killing them is meant to feel easy.
+Each cow wears a plate that takes 100 off a hit. The Gunslinger's round is 200, so 100 gets through, and the plate rings when it does. Health is 600, so three paired hits drop the cow.
 
 They have no gun. The prongs stay dark until a player steps inside the jolt's reach, about eight metres. That step
 starts the charge: one rising whine of about a second and a half, and the prongs brighten with it. At the top of the
@@ -68,13 +75,14 @@ The last wave of the first phase always includes one. After that, a later wave i
 time in eight.
 
 It walks a diagonal down the road and stays off cover. When the next step would meet a barricade, rubble,
-or the edge of the road, it turns ninety degrees away from that obstacle and continues. Hit points are 4.
-In front of those sits a shield of 4 that, once emptied, stays down for 4 seconds and then refills.
-While the shield is up the walker wears the faint blue shimmer. A paired plasma hit empties the shield.
-Another paired hit during those 4 quiet seconds drops the body.
+or the edge of the road, it turns ninety degrees away from that obstacle and continues. Hit points are 800.
+In front of those sits a shield of 1600 that, once emptied, stays down for 4 seconds and then refills.
+While the shield is up the walker wears the faint blue shimmer. Four paired plasma hits empty the shield. Its 800-point hull takes another two paired hits.
+Each absorbed shot briefly brightens and swells the shield shell.
 
 When a player comes within 16 metres it stops, turns toward that player, and aims for 2 seconds. It then
-throws four grenades in one volley. The aim point is the center of the pattern. The four landings are
+throws four grenades in one volley. A player who runs away during the lock can pull the aim point only as
+far as that 16 metre locking range. The aim point is the center of the pattern. The four landings are
 spread around that center, kept apart, and some of them pass the aim point. Each landing shows a rotating
 red cross on the ground with a circle around it. The circle's rim is 2 metres from the cross, and that is
 the whole of the blast. Damage is 80 at the center and falls off to nothing at the rim. Every body
@@ -85,6 +93,8 @@ volley, and the walker walks during that reload. A clear player starts another a
 done.
 
 A defeated walker drops 3 points.
+
+When any machine is destroyed, its short 3 metre blast deals 20 to 50 damage to other machines and pushes them aside. A displaced robot suspends its normal attack, returns to the position it expected to occupy, and then continues its prior behavior.
 
 ## Entropy Turbines
 
@@ -102,8 +112,7 @@ while it is down, and step back before it lifts.
 Later bosses differ from that fight. The locked rule is the climb in danger, not one pattern repeated at a larger size.
 
 A spawned machine copies its body, movement, weapon, and abilities from `src/character.rs`. Scout, trooper, and heavy live in `src/enemy/gunner.rs`, beside the zap-bot and the grenade walker. A gunner reports what it can see, and the rifle spends the burst.
-A zap-bot carries a jolt and a plate. A grenade walker carries a launcher and a shield. Health, damage, and rewards
-stay integers. Distances and speeds use the same metres the world already moves in. Waits are `Duration`s. Cover entry and exit stay plain factors on the gunner's pace. The grenade walker's step and the cow's lane step live with the other locomotion in `src/enemy/behavior.rs`. The launcher owns the aim and the throw. The jolt owns the charge and the bolt. A heavier weapon that also changes
+A zap-bot carries a jolt and a plate. A grenade walker carries a launcher and a shield. Health, damage, armor, and shields use the same integer scale as the player's 1000 starting health. Rewards and counts remain small, separate integers. Distances and speeds use the same metres the world already moves in. Waits are `Duration`s. Cover entry and exit stay plain factors on the gunner's pace. The grenade walker's step and the cow's lane step live with the other locomotion in `src/enemy/behavior.rs`. The launcher owns the aim and the throw. The jolt owns the charge and the bolt. A heavier weapon that also changes
 the pace is still to be built. The three gunners keep the behavior they have.
 
 Enemies do not yet react to ground hazards. A [Mage](players/mage.md) patch or a [Steamist](players/steamist.md) burst

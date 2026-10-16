@@ -11,7 +11,7 @@ use bevy::{prelude::*, window::PrimaryWindow};
 use super::behavior::{self, Drift};
 use super::rifle::{Look, Rifle, RifleAim, RoundFired};
 use super::{Cover, Enemy, EnemyKind, EnemyReward, EnemyState, Tactic};
-use crate::combat::{self, Faction, Health, HitCircle};
+use crate::combat::{self, BlastRecovery, Faction, Health, HitCircle};
 use crate::player::{MovementSpeed, Player};
 use crate::session::{Phase, Session};
 use crate::world::camera::{self, FollowCamera};
@@ -144,7 +144,7 @@ pub fn move_enemies(
             Option<&Rifle>,
             Option<&mut Retreating>,
         ),
-        (With<Enemy>, Without<Player>),
+        (With<Enemy>, Without<Player>, Without<BlastRecovery>),
     >,
 ) {
     if session.phase != Phase::Playing {
@@ -324,7 +324,7 @@ pub fn shoot_enemies(
     mut aims: MessageWriter<RifleAim>,
     mut enemy_queries: ParamSet<(
         Query<(Entity, &Transform, &Enemy)>,
-        Query<(Entity, &mut Transform, &mut Enemy, Option<&Rifle>)>,
+        Query<(Entity, &mut Transform, &mut Enemy, Option<&Rifle>), Without<BlastRecovery>>,
     )>,
     mut positions: Local<Vec<(Entity, Vec3, f32)>>,
 ) {

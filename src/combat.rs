@@ -31,6 +31,7 @@ pub struct HitCircle {
     pub swell: bool,
 }
 
+/// Projectile damage on the shared combat scale where player health starts at 1000.
 #[derive(Component)]
 pub struct Damage(pub u32);
 
@@ -48,6 +49,40 @@ pub struct Projectile {
     pub material: Material,
     pub delivery: Delivery,
     pub owner: Entity,
+}
+
+/// Remaining shallow-angle surface bounces. Ordinary and enemy rounds do not
+/// carry this component.
+#[derive(Component)]
+pub struct Ricochet(pub u8);
+
+const HIT_FLASH_LIFE: f32 = 0.09;
+const BLAST_FLASH_LIFE: f32 = 0.24;
+const DEATH_BLAST_RADIUS: f32 = 3.0;
+const DEATH_BLAST_INNER_DAMAGE: u32 = 50;
+const DEATH_BLAST_EDGE_DAMAGE: u32 = 20;
+const BLAST_PUSH_TIME: f32 = 0.22;
+const BLAST_RETURN_SPEED: f32 = 4.2;
+
+/// A short unshadowed light attached to a hit, shield break, or destroyed
+/// machine. Its intensity falls to zero before the entity is removed.
+#[derive(Component)]
+pub struct CombatFlash {
+    remaining: f32,
+    lifetime: f32,
+    intensity: f32,
+}
+
+/// A robot pushed out of place by a destroyed machine. It first follows the
+/// blast impulse, then walks back to the position its behavior expected before
+/// any of its normal movement or attacks resume.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct BlastRecovery {
+    expected: Vec3,
+    pushed_from: Vec3,
+    pushed_to: Vec3,
+    age: f32,
+    returning: bool,
 }
 
 /// A bounty rising off the ground. `floor` is the surface it left.
@@ -133,16 +168,22 @@ pub fn move_projectiles(
 
 pub fn resolve_hits(
     session: Res<Session>,
+    mut commands: Commands,
     mut strikes: MessageWriter<Struck>,
-    mut bullets: Query<(&Transform, &mut Projectile, &Damage)>,
-    covers: Query<(Entity, &Transform, &Cover)>,
-    boulders: Query<(Entity, &Transform), With<Boulder>>,
+    mut bullets: Query<(
+        &mut Transform,
+        &mut Projectile,
+        &Damage,
+        Option<&mut Ricochet>,
+    )>,
+    covers: Query<(Entity, &Transform, &Cover), Without<Projectile>>,
+    boulders: Query<(Entity, &Transform), (With<Boulder>, Without<Projectile>)>,
     bodies: Query<(Entity, &Transform, &HitCircle, &Health), Without<Projectile>>,
 ) {
     if session.phase != Phase::Playing {
         return;
     }
-    for (transform, mut bullet, damage) in &mut bullets {
+    for (mut transform, mut bullet, damage, ricochet) in &mut bullets {
         if bullet.spent {
             continue;
         }
@@ -150,11 +191,17 @@ pub fn resolve_hits(
         let end = transform.translation;
         let mut nearest = 1.01;
         let mut target = None;
+        let mut surface_normal = None;
         for (entity, cover_transform, cover) in &covers {
             if let Some(t) = segment_cover_t(start, end, cover_transform.translation, cover) {
                 if t < nearest {
                     nearest = t;
                     target = Some(entity);
+                    surface_normal = Some(cover_surface_normal(
+                        start.lerp(end, t),
+                        cover_transform.translation,
+                        cover,
+                    ));
                 }
             }
         }
@@ -163,6 +210,7 @@ pub fn resolve_hits(
                 if t < nearest {
                     nearest = t;
                     target = Some(entity);
+                    surface_normal = Some(boulder_surface_normal(start.lerp(end, t), boulder));
                 }
             }
         }
@@ -184,12 +232,36 @@ pub fn resolve_hits(
                 if t < nearest {
                     nearest = t;
                     target = Some(entity);
+                    surface_normal = None;
                 }
             }
         }
         let Some(target) = target else {
             continue;
         };
+        let impact = start.lerp(end, nearest.clamp(0.0, 1.0));
+        spawn_impact_flash(&mut commands, impact, bullet.faction, bullet.material);
+        if let (Some(normal), Some(mut ricochet)) = (surface_normal, ricochet) {
+            let grazing = bullet.direction.dot(normal).abs() <= 30.0_f32.to_radians().sin();
+            if ricochet.0 > 0 && bullet.faction == Faction::Player && grazing {
+                ricochet.0 -= 1;
+                bullet.direction = bullet.direction.reflect(normal).normalize_or_zero();
+                transform.rotation =
+                    Quat::from_rotation_y(bullet.direction.x.atan2(bullet.direction.z));
+                let restart = impact + bullet.direction * 0.025;
+                bullet.previous = restart;
+                transform.translation = restart;
+                strikes.write(Struck {
+                    target,
+                    source: bullet.owner,
+                    damage: damage.0,
+                    material: bullet.material,
+                    delivery: bullet.delivery,
+                    faction: bullet.faction,
+                });
+                continue;
+            }
+        }
         bullet.spent = true;
         strikes.write(Struck {
             target,
@@ -200,6 +272,31 @@ pub fn resolve_hits(
             faction: bullet.faction,
         });
     }
+}
+
+fn cover_surface_normal(at: Vec3, center: Vec3, cover: &Cover) -> Vec3 {
+    let x = ((at.x - center.x) / cover.half_width).abs();
+    let z = ((at.z - center.z) / cover.half_depth).abs();
+    if x > z {
+        Vec3::X * (at.x - center.x).signum()
+    } else {
+        Vec3::Z * (at.z - center.z).signum()
+    }
+}
+
+fn boulder_surface_normal(at: Vec3, boulder: &Transform) -> Vec3 {
+    let local = boulder.rotation.inverse() * (at - boulder.translation);
+    let scaled = Vec3::new(
+        local.x / boulder.scale.x.max(0.001),
+        local.y / boulder.scale.y.max(0.001),
+        local.z / boulder.scale.z.max(0.001),
+    );
+    let axis = if scaled.x.abs() >= scaled.z.abs() {
+        Vec3::X * scaled.x.signum()
+    } else {
+        Vec3::Z * scaled.z.signum()
+    };
+    boulder.rotation * axis
 }
 
 pub fn deliver_hits(
@@ -251,11 +348,21 @@ pub fn recall_shots(
 
 pub fn present_notices(
     mut notices: MessageReader<Notice>,
+    mut strikes: MessageWriter<Struck>,
     mut commands: Commands,
     mut session: ResMut<Session>,
     sounds: Res<SoundBank>,
     visuals: Res<Visuals>,
     rewards: Query<&EnemyReward>,
+    bodies: Query<(
+        Entity,
+        &Transform,
+        &HitCircle,
+        &Health,
+        &EnemyReward,
+        Option<&BlastRecovery>,
+    )>,
+    transforms: Query<&Transform>,
 ) {
     for notice in notices.read().copied() {
         match notice {
@@ -274,8 +381,18 @@ pub fn present_notices(
                 target,
                 at,
             } => {
-                audio::play_game(&mut commands, &sounds.death, 0.18, 1.3);
+                audio::play_game(&mut commands, &sounds.enemy_blast, 0.42, 1.0);
+                audio::play_game(&mut commands, &sounds.death, 0.12, 1.08);
                 spawn_wreck(&mut commands, &visuals, at);
+                spawn_combat_flash(
+                    &mut commands,
+                    at + Vec3::Y * 0.45,
+                    Color::srgb(1.0, 0.29, 0.055),
+                    1_800_000.0,
+                    7.0,
+                    BLAST_FLASH_LIFE,
+                );
+                scatter_death_blast(&mut commands, &mut strikes, target, at, &bodies);
                 if let Ok(reward) = rewards.get(target) {
                     let points = reward.points();
                     let floor = 0.35;
@@ -298,9 +415,193 @@ pub fn present_notices(
             Notice::Armor => {
                 audio::play_game(&mut commands, &sounds.armor_hit, 0.24, 1.0);
             }
-            Notice::Shield => {
-                audio::play_game(&mut commands, &sounds.shield_hit, 0.22, 1.0);
+            Notice::Shield { target, broken } => {
+                if broken {
+                    audio::play_game(&mut commands, &sounds.shield_break, 0.40, 1.0);
+                    if let Ok(transform) = transforms.get(target) {
+                        spawn_combat_flash(
+                            &mut commands,
+                            transform.translation + Vec3::Y * 0.35,
+                            Color::srgb(0.32, 0.72, 1.0),
+                            1_250_000.0,
+                            5.5,
+                            0.20,
+                        );
+                    }
+                } else {
+                    audio::play_game(&mut commands, &sounds.shield_hit, 0.22, 1.0);
+                }
             }
+        }
+    }
+}
+
+fn scatter_death_blast(
+    commands: &mut Commands,
+    strikes: &mut MessageWriter<Struck>,
+    source: Entity,
+    at: Vec3,
+    bodies: &Query<(
+        Entity,
+        &Transform,
+        &HitCircle,
+        &Health,
+        &EnemyReward,
+        Option<&BlastRecovery>,
+    )>,
+) {
+    for (entity, transform, circle, health, reward, recovery) in bodies.iter() {
+        if entity == source || health.0 == 0 || circle.faction != Faction::Enemy {
+            continue;
+        }
+        let offset = Vec2::new(
+            transform.translation.x - at.x,
+            transform.translation.z - at.z,
+        );
+        let distance = offset.length();
+        if distance > DEATH_BLAST_RADIUS {
+            continue;
+        }
+        let along = (distance / DEATH_BLAST_RADIUS).clamp(0.0, 1.0);
+        let damage = (DEATH_BLAST_INNER_DAMAGE as f32
+            + (DEATH_BLAST_EDGE_DAMAGE as f32 - DEATH_BLAST_INNER_DAMAGE as f32) * along)
+            .round() as u32;
+        strikes.write(Struck {
+            target: entity,
+            source,
+            damage,
+            material: Material::Explosive,
+            delivery: Delivery::Kinetic,
+            faction: Faction::Enemy,
+        });
+
+        let direction = if offset.length_squared() > 1.0e-6 {
+            offset.normalize()
+        } else {
+            Vec2::X
+        };
+        let weight = match reward.kind {
+            crate::enemy::EnemyKind::Scout => 1.0,
+            crate::enemy::EnemyKind::Trooper => 0.82,
+            crate::enemy::EnemyKind::Heavy => 0.48,
+            crate::enemy::EnemyKind::ZapBot => 0.68,
+            crate::enemy::EnemyKind::Grenadier => 0.44,
+        };
+        let push = (0.65 + (1.0 - along) * 1.55) * weight;
+        let expected = recovery
+            .map(|recovery| recovery.expected)
+            .unwrap_or(transform.translation);
+        let pushed_from = transform.translation;
+        commands.entity(entity).insert(BlastRecovery {
+            expected,
+            pushed_from,
+            pushed_to: pushed_from + Vec3::new(direction.x, 0.0, direction.y) * push,
+            age: 0.0,
+            returning: false,
+        });
+    }
+}
+
+fn spawn_impact_flash(commands: &mut Commands, at: Vec3, faction: Faction, material: Material) {
+    let (color, intensity, range) = match (faction, material) {
+        (Faction::Player, Material::Plasma) => (Color::srgb(0.56, 0.82, 1.0), 520_000.0, 3.3),
+        (_, Material::Electricity) => (Color::srgb(1.0, 0.78, 0.24), 420_000.0, 3.0),
+        (_, Material::Explosive) => (Color::srgb(1.0, 0.30, 0.06), 700_000.0, 4.0),
+        _ => (Color::srgb(1.0, 0.22, 0.07), 180_000.0, 2.2),
+    };
+    spawn_combat_flash(
+        commands,
+        at + Vec3::Y * 0.15,
+        color,
+        intensity,
+        range,
+        HIT_FLASH_LIFE,
+    );
+}
+
+fn spawn_combat_flash(
+    commands: &mut Commands,
+    at: Vec3,
+    color: Color,
+    intensity: f32,
+    range: f32,
+    lifetime: f32,
+) {
+    commands.spawn((
+        CombatFlash {
+            remaining: lifetime,
+            lifetime,
+            intensity,
+        },
+        PointLight {
+            color,
+            intensity,
+            range,
+            shadow_maps_enabled: false,
+            ..default()
+        },
+        Transform::from_translation(at),
+    ));
+}
+
+pub fn fade_combat_flashes(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut flashes: Query<(Entity, &mut PointLight, &mut CombatFlash)>,
+) {
+    for (entity, mut light, mut flash) in &mut flashes {
+        flash.remaining -= time.delta_secs();
+        if flash.remaining <= 0.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let fade = (flash.remaining / flash.lifetime).clamp(0.0, 1.0);
+        light.intensity = flash.intensity * fade * fade;
+    }
+}
+
+pub fn recover_blast_displacements(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut robots: Query<(Entity, &mut Transform, &HitCircle, &mut BlastRecovery), Without<Player>>,
+    covers: Query<(&Transform, &Cover), Without<BlastRecovery>>,
+) {
+    let dt = time.delta_secs();
+    for (entity, mut transform, circle, mut recovery) in &mut robots {
+        if !recovery.returning {
+            recovery.age += dt;
+            let t = (recovery.age / BLAST_PUSH_TIME).clamp(0.0, 1.0);
+            let eased = 1.0 - (1.0 - t).powi(3);
+            transform.translation = recovery.pushed_from.lerp(recovery.pushed_to, eased);
+            if t >= 1.0 {
+                recovery.returning = true;
+            }
+        } else {
+            let delta = recovery.expected - transform.translation;
+            let flat = Vec3::new(delta.x, 0.0, delta.z);
+            let step = flat.clamp_length_max(BLAST_RETURN_SPEED * dt);
+            transform.translation += step;
+            if step.length_squared() > 1.0e-6 {
+                transform.rotation = Quat::from_rotation_y(step.x.atan2(step.z));
+            }
+            if flat.length_squared() <= 0.08 * 0.08 {
+                transform.translation = recovery.expected;
+                commands.entity(entity).remove::<BlastRecovery>();
+                continue;
+            }
+        }
+        transform.translation.x = route::clamp_actor_x(
+            transform.translation.x,
+            transform.translation.z,
+            circle.radius,
+        );
+        for (cover_transform, cover) in &covers {
+            crate::enemy::separate_from_cover(
+                &mut transform.translation,
+                circle.radius,
+                cover_transform.translation,
+                cover,
+            );
         }
     }
 }
@@ -616,6 +917,13 @@ mod tests {
         let mut bursts = app.world_mut().query::<(Entity, &WreckBurst)>();
         let found: Vec<_> = bursts.iter(app.world()).map(|(entity, _)| entity).collect();
         assert_eq!(found.len(), 8);
+        assert_eq!(
+            app.world_mut()
+                .query::<&CombatFlash>()
+                .iter(app.world())
+                .count(),
+            1
+        );
         let mut orbs = app.world_mut().query::<&PointOrb>();
         assert_eq!(orbs.iter(app.world()).count(), 1);
         let core = bursts
@@ -643,6 +951,89 @@ mod tests {
             0
         );
         assert_eq!(orbs.iter(app.world()).count(), 1);
+    }
+
+    #[test]
+    fn a_destroyed_machine_damages_and_displaces_nearby_robots_only() {
+        let mut app = App::new();
+        prepare(&mut app);
+        let source = app
+            .world_mut()
+            .spawn((
+                EnemyReward {
+                    kind: EnemyKind::Scout,
+                    hit_player: false,
+                },
+                Transform::from_xyz(0.0, 0.5, 0.0),
+            ))
+            .id();
+        let spawn_target = |world: &mut World, x: f32| {
+            world
+                .spawn((
+                    Abilities::enemy(),
+                    Health(300),
+                    body_circle(),
+                    EnemyReward {
+                        kind: EnemyKind::Scout,
+                        hit_player: false,
+                    },
+                    Transform::from_xyz(x, 0.5, 0.0),
+                ))
+                .id()
+        };
+        let near = spawn_target(app.world_mut(), 1.0);
+        let far = spawn_target(app.world_mut(), 4.0);
+        app.world_mut().write_message(Notice::Died {
+            player: false,
+            target: source,
+            at: Vec3::new(0.0, 0.5, 0.0),
+        });
+
+        app.update();
+        assert!(app.world().get::<BlastRecovery>(near).is_some());
+        assert!(app.world().get::<BlastRecovery>(far).is_none());
+        app.update();
+        assert_eq!(app.world().get::<Health>(near).unwrap().0, 260);
+        assert_eq!(app.world().get::<Health>(far).unwrap().0, 300);
+    }
+
+    #[test]
+    fn a_blast_displaced_robot_returns_to_its_expected_position() {
+        let mut app = App::new();
+        app.insert_resource(Time::<()>::default())
+            .add_systems(Update, recover_blast_displacements);
+        let robot = app
+            .world_mut()
+            .spawn((
+                body_circle(),
+                Transform::from_xyz(0.0, 0.5, 0.0),
+                BlastRecovery {
+                    expected: Vec3::new(0.0, 0.5, 0.0),
+                    pushed_from: Vec3::new(0.0, 0.5, 0.0),
+                    pushed_to: Vec3::new(1.0, 0.5, 0.0),
+                    age: 0.0,
+                    returning: false,
+                },
+            ))
+            .id();
+
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_millis(220));
+        app.update();
+        assert!(app.world().get::<Transform>(robot).unwrap().translation.x > 0.9);
+
+        for _ in 0..4 {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_millis(100));
+            app.update();
+        }
+        assert!(app.world().get::<BlastRecovery>(robot).is_none());
+        assert_eq!(
+            app.world().get::<Transform>(robot).unwrap().translation,
+            Vec3::new(0.0, 0.5, 0.0)
+        );
     }
 
     #[test]
@@ -804,6 +1195,52 @@ mod tests {
         app.update();
         assert!(app.world().get::<Projectile>(shot).unwrap().spent);
         assert_eq!(app.world().get::<Health>(enemy).unwrap().0, 2);
+    }
+
+    #[test]
+    fn a_grazing_gunslinger_round_ricochets_but_a_steep_one_shatters() {
+        let mut app = App::new();
+        prepare(&mut app);
+        app.world_mut().spawn((
+            Abilities::solid(),
+            Cover {
+                half_width: 2.7,
+                half_depth: 0.5,
+                height: 1.1,
+            },
+            Transform::from_xyz(0.0, 0.55, 0.0),
+        ));
+        let mut grazing = round(Faction::Player, Material::Plasma, Delivery::Energy);
+        grazing.previous = Vec3::new(-2.0, 0.75, 0.6);
+        grazing.direction = Vec3::new(4.0, 0.0, -1.2).normalize();
+        let grazing = app
+            .world_mut()
+            .spawn((
+                grazing,
+                Ricochet(2),
+                Damage(200),
+                Transform::from_xyz(2.0, 0.75, -0.6),
+            ))
+            .id();
+        let mut steep = round(Faction::Player, Material::Plasma, Delivery::Energy);
+        steep.previous = Vec3::new(0.0, 0.75, 2.0);
+        steep.direction = Vec3::NEG_Z;
+        let steep = app
+            .world_mut()
+            .spawn((
+                steep,
+                Ricochet(2),
+                Damage(200),
+                Transform::from_xyz(0.0, 0.75, -2.0),
+            ))
+            .id();
+
+        app.update();
+        let grazing_shot = app.world().get::<Projectile>(grazing).unwrap();
+        assert!(!grazing_shot.spent);
+        assert!(grazing_shot.direction.z > 0.0);
+        assert_eq!(app.world().get::<Ricochet>(grazing).unwrap().0, 1);
+        assert!(app.world().get::<Projectile>(steep).unwrap().spent);
     }
 
     #[test]

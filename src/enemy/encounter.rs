@@ -8,7 +8,9 @@ use bevy::window::PrimaryWindow;
 use super::grenadier;
 use super::gunner::{self, GunnerSpawn};
 use super::zap_bot::ZAP_SCHEDULE;
-use super::{Cover, Drift, Enemy, EnemyKind, EnemyReward, EnemyState, Tactic};
+use super::{
+    Cover, Drift, Enemy, EnemyKind, EnemyReward, EnemyState, EvolutionBot, EvolutionLab, Tactic,
+};
 use crate::combat::Abilities;
 use crate::session::{Phase, Session};
 use crate::world::camera::{self, FollowCamera};
@@ -22,6 +24,14 @@ const COVER_WIDTH: f32 = 5.4;
 const OBSTACLE_PLACE_AHEAD: f32 = 48.0;
 const RUBBLE_SIZE: Vec3 = Vec3::new(1.3, 0.8, 1.4);
 const FIELD_COVER_SIZE: Vec3 = Vec3::new(2.1, 1.0, 1.9);
+/// The GLB is authored at `RUBBLE_SIZE`. Cover entities retain their old
+/// size-as-scale representation, so the visual child cancels that authored
+/// size before inheriting the parent scale.
+const RUBBLE_VISUAL_SCALE: Vec3 = Vec3::new(
+    1.0 / RUBBLE_SIZE.x,
+    1.0 / RUBBLE_SIZE.y,
+    1.0 / RUBBLE_SIZE.z,
+);
 pub const WAVES_PER_PHASE: u32 = 10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,6 +163,12 @@ fn wave_has_grenadier(phase: u32, wave: u32) -> bool {
     mixed % 8 == 0
 }
 
+/// Give the four rubble pieces in a wave distinct quarter-turns, then rotate
+/// that sequence between waves without advancing the encounter RNG.
+fn rubble_yaw(wave: u32, piece: u32) -> f32 {
+    ((wave.wrapping_mul(3) + piece) % 4) as f32 * std::f32::consts::FRAC_PI_2
+}
+
 pub fn place_covers(
     session: Res<Session>,
     visuals: Res<Visuals>,
@@ -212,43 +228,59 @@ fn place_wave(
         MeshMaterial3d(visuals.barricade_material.clone()),
         Transform::from_xyz(route::centerline_x(z) + x, 0.55, z),
     ));
-    for side in [-1.0, 1.0] {
-        commands.spawn((
-            Abilities::solid(),
-            Cover {
-                half_width: RUBBLE_SIZE.x * 0.5,
-                half_depth: RUBBLE_SIZE.z * 0.5,
-                height: RUBBLE_SIZE.y,
-            },
-            Mesh3d(visuals.rubble_mesh.clone()),
-            MeshMaterial3d(visuals.rubble_material.clone()),
-            Transform::from_xyz(
-                route::centerline_x(z - 0.15) + x + side * 2.6,
-                RUBBLE_SIZE.y * 0.5,
-                z - 0.15,
-            )
-            .with_scale(RUBBLE_SIZE),
-        ));
+    for (piece, side) in [-1.0, 1.0].into_iter().enumerate() {
+        commands
+            .spawn((
+                Abilities::solid(),
+                Cover {
+                    half_width: RUBBLE_SIZE.x * 0.5,
+                    half_depth: RUBBLE_SIZE.z * 0.5,
+                    height: RUBBLE_SIZE.y,
+                },
+                Visibility::default(),
+                Transform::from_xyz(
+                    route::centerline_x(z - 0.15) + x + side * 2.6,
+                    RUBBLE_SIZE.y * 0.5,
+                    z - 0.15,
+                )
+                .with_rotation(Quat::from_rotation_y(rubble_yaw(index, piece as u32)))
+                .with_scale(RUBBLE_SIZE),
+            ))
+            .with_children(|cover| {
+                cover.spawn((
+                    WorldAssetRoot(visuals.rubble_scene.clone()),
+                    Transform::from_scale(RUBBLE_VISUAL_SCALE),
+                    Visibility::default(),
+                ));
+            });
     }
     // Leave the middle lane open while giving the player places to break
     // incoming fire between barricades.
-    for (field_x, offset) in field_x.into_iter().zip([9.0, -11.0]) {
-        commands.spawn((
-            Abilities::solid(),
-            Cover {
-                half_width: FIELD_COVER_SIZE.x * 0.5,
-                half_depth: FIELD_COVER_SIZE.z * 0.5,
-                height: FIELD_COVER_SIZE.y,
-            },
-            Mesh3d(visuals.rubble_mesh.clone()),
-            MeshMaterial3d(visuals.rubble_material.clone()),
-            Transform::from_xyz(
-                route::centerline_x(z + offset) + field_x,
-                FIELD_COVER_SIZE.y * 0.5,
-                z + offset,
-            )
-            .with_scale(FIELD_COVER_SIZE),
-        ));
+    for (piece, (field_x, offset)) in field_x.into_iter().zip([9.0, -11.0]).enumerate() {
+        commands
+            .spawn((
+                Abilities::solid(),
+                Cover {
+                    half_width: FIELD_COVER_SIZE.x * 0.5,
+                    half_depth: FIELD_COVER_SIZE.z * 0.5,
+                    height: FIELD_COVER_SIZE.y,
+                },
+                Visibility::default(),
+                Transform::from_xyz(
+                    route::centerline_x(z + offset) + field_x,
+                    FIELD_COVER_SIZE.y * 0.5,
+                    z + offset,
+                )
+                .with_rotation(Quat::from_rotation_y(rubble_yaw(index, piece as u32 + 2)))
+                .with_scale(FIELD_COVER_SIZE),
+            ))
+            .with_children(|cover| {
+                cover.spawn((
+                    WorldAssetRoot(visuals.rubble_scene.clone()),
+                    Transform::from_scale(RUBBLE_VISUAL_SCALE),
+                    Visibility::default(),
+                ));
+            });
     }
     director.group_number += 1;
     if director.group_number == WAVES_PER_PHASE {
@@ -261,6 +293,7 @@ pub fn spawn_groups(
     session: Res<Session>,
     visuals: Res<Visuals>,
     mut director: ResMut<EncounterDirector>,
+    lab: Res<EvolutionLab>,
     mut commands: Commands,
     mut sites: Query<(&Transform, &mut CoverSite), With<Cover>>,
     enemies: Query<Entity, With<Enemy>>,
@@ -280,11 +313,11 @@ pub fn spawn_groups(
             continue;
         }
         site.timer -= time.delta_secs();
-        if site.timer > 0.0 || live_count + site.count > MAX_ENEMIES {
+        if site.timer > 0.0 || live_count + site.count + 1 > MAX_ENEMIES {
             continue;
         }
         site.spawned = true;
-        live_count += site.count;
+        live_count += site.count + 1;
         let center = (site.count as f32 - 1.0) * 0.5;
         for index in 0..site.count {
             let slot = index as f32 - center;
@@ -341,6 +374,50 @@ pub fn spawn_groups(
                 },
             );
         }
+        let genome = lab.genome_for_wave(site.group_id);
+        let scout = crate::character::scout();
+        let side = genome.side();
+        let slot_x = route::clamp_actor_x(
+            cover.translation.x + side * (site.count as f32 * 0.72 + 1.1),
+            cover.translation.z,
+            scout.radius(),
+        );
+        let start_z = cover.translation.z - 6.0;
+        let position = Vec3::new(
+            slot_x + route::centerline_x(start_z) - route::centerline_x(cover.translation.z),
+            scout.height(),
+            start_z,
+        );
+        let evolved = gunner::spawn(
+            &mut commands,
+            &visuals,
+            EnemyKind::Scout,
+            GunnerSpawn {
+                group_id: site.group_id,
+                state: EnemyState::Entering,
+                tactic: genome.tactic(),
+                cover_z: cover.translation.z,
+                slot_x,
+                flank_x: route::clamp_actor_x(
+                    cover.translation.x + side * 4.8,
+                    cover.translation.z,
+                    scout.radius(),
+                ),
+                hold_timer: (0.25 + genome.weights[7].abs() * 0.8).clamp(0.2, 1.1),
+                side,
+                opening: 0.0,
+                position,
+            },
+        );
+        commands
+            .entity(evolved)
+            .insert(EvolutionBot::new(genome, position));
+        commands.spawn((
+            Mesh3d(visuals.bullet_mesh.clone()),
+            MeshMaterial3d(visuals.evolution_bullet_material.clone()),
+            Transform::from_xyz(0.0, 0.58, 0.0).with_scale(Vec3::splat(0.22)),
+            ChildOf(evolved),
+        ));
         if site.grenadier {
             let side = if director.random() < 0.5 { -1.0 } else { 1.0 };
             let z = cover.translation.z - 8.0;
@@ -518,6 +595,17 @@ mod tests {
     }
 
     #[test]
+    fn rubble_uses_every_quarter_turn_and_shifts_on_the_next_wave() {
+        let turns = std::f32::consts::FRAC_PI_2;
+        assert_eq!(
+            (0..4).map(|piece| rubble_yaw(0, piece)).collect::<Vec<_>>(),
+            vec![0.0, turns, turns * 2.0, turns * 3.0]
+        );
+        assert_eq!(rubble_yaw(1, 0), turns * 3.0);
+        assert_eq!(rubble_yaw(1, 1), 0.0);
+    }
+
+    #[test]
     fn a_wave_more_than_forty_eight_metres_ahead_stays_unbuilt() {
         let mut app = App::new();
         app.insert_resource(Session::default())
@@ -552,6 +640,7 @@ mod tests {
             .insert_resource(Time::<()>::default())
             .insert_resource(Visuals::default())
             .insert_resource(EncounterDirector::default())
+            .insert_resource(EvolutionLab::default())
             .add_systems(Update, spawn_groups);
         app.world_mut().spawn((
             FollowCamera,
@@ -596,7 +685,14 @@ mod tests {
         assert!(app.world().get::<CoverSite>(waiting).unwrap().spawned);
         assert_eq!(
             app.world_mut().query::<&Enemy>().iter(app.world()).count(),
-            2
+            3
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<&EvolutionBot>()
+                .iter(app.world())
+                .count(),
+            1
         );
     }
 

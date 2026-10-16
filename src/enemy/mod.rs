@@ -9,6 +9,7 @@ use bevy::prelude::*;
 
 mod behavior;
 mod encounter;
+mod evolution;
 mod grenadier;
 mod gunner;
 mod rifle;
@@ -19,6 +20,10 @@ pub use behavior::{
 };
 pub use encounter::{
     EncounterDirector, WAVES_PER_PHASE, place_covers, spawn_groups, spawn_reinforcements,
+};
+pub use evolution::{
+    EvolutionBot, EvolutionLab, credit_lineage_hits, observe_lineage, paint_gene_hud,
+    record_lineage_deaths, reset_lineage_on_restart, spawn_gene_hud,
 };
 pub use grenadier::{Grenadier, VolleyPiece, aim_grenadiers, fly_grenades};
 pub use gunner::{
@@ -122,7 +127,7 @@ pub struct Cover {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn enemy_shot_damage_uses_player_health_scale() {
+    fn all_combat_values_use_the_player_health_scale() {
         use std::time::Duration;
 
         let scout = crate::character::scout();
@@ -134,19 +139,26 @@ mod tests {
         assert_eq!(scout.rifle().round_speed, 13.0);
         assert_eq!(trooper.rifle().round_speed, scout.rifle().round_speed);
         assert_eq!(heavy.rifle().round_speed, scout.rifle().round_speed);
+        let gunslinger = crate::character::gunslinger();
+        assert_eq!(gunslinger.health(), 1_000);
+        assert_eq!(gunslinger.revolver().projectile_damage, 200);
+        assert_eq!(scout.health(), 300);
+        assert_eq!(trooper.health(), 600);
+        assert_eq!(heavy.health(), 1_500);
         let zap = crate::character::zap_bot();
-        assert_eq!(zap.health(), 2);
-        let through = crate::character::gunslinger().revolver().projectile_damage
-            - zap.plate().expect("the cow wears a plate");
+        assert_eq!(zap.health(), 600);
+        assert_eq!(zap.plate(), Some(100));
+        let through =
+            gunslinger.revolver().projectile_damage - zap.plate().expect("the cow wears a plate");
         assert!(through > 0, "the plate stays under the current shot");
-        assert!(
-            through * 2 >= zap.health(),
-            "one paired hit still drops a cow"
-        );
+        assert_eq!(zap.health().div_ceil(through * 2), 3);
         let walker = crate::character::grenadier();
-        assert_eq!(walker.health(), 4);
+        assert_eq!(walker.health(), 800);
+        let pair_damage = gunslinger.revolver().projectile_damage * 2;
+        assert_eq!(walker.health().div_ceil(pair_damage), 2);
         let (shield, down_for) = walker.shield().expect("the walker wears a shield");
-        assert_eq!(shield, 4);
+        assert_eq!(shield, 1_600);
+        assert_eq!(shield.div_ceil(pair_damage), 4);
         assert_eq!(down_for, Duration::from_secs(4));
     }
 }

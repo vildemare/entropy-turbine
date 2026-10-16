@@ -4,6 +4,7 @@
 
 use bevy::prelude::*;
 
+use super::EvolutionBot;
 use crate::audio::{self, SoundBank};
 use crate::character::RifleSpec;
 use crate::combat::{Damage, Delivery, Faction, Lifetime, Material, Projectile};
@@ -103,13 +104,52 @@ pub fn fire_rifles(
     mut commands: Commands,
     mut aims: MessageReader<RifleAim>,
     mut fired: MessageWriter<RoundFired>,
-    mut rifles: Query<&mut Rifle>,
+    mut rifles: Query<(&mut Rifle, Option<&mut EvolutionBot>)>,
 ) {
     let dt = time.delta_secs();
     for aim in aims.read().copied() {
-        let Ok(mut rifle) = rifles.get_mut(aim.shooter) else {
+        let Ok((mut rifle, evolution)) = rifles.get_mut(aim.shooter) else {
             continue;
         };
+        if let Some(mut bot) = evolution {
+            bot.fire_timer = (bot.fire_timer - dt).max(0.0);
+            if aim.look != Look::Clear || bot.fire_timer > 0.0001 {
+                continue;
+            }
+            if !bot
+                .genome
+                .trigger(aim.distance, rifle.sight, true, bot.health_ratio())
+            {
+                bot.fire_timer = 0.08;
+                continue;
+            }
+            bot.fire_timer = 0.30;
+            commands.spawn((
+                Projectile {
+                    direction: aim.direction,
+                    speed: rifle.round_speed,
+                    radius: rifle.round_radius,
+                    previous: aim.muzzle,
+                    spent: false,
+                    faction: Faction::Enemy,
+                    material: Material::Metal,
+                    delivery: Delivery::Kinetic,
+                    owner: aim.shooter,
+                },
+                Damage(rifle.damage),
+                Lifetime(2.5),
+                Mesh3d(visuals.bullet_mesh.clone()),
+                MeshMaterial3d(visuals.evolution_bullet_material.clone()),
+                Transform::from_translation(aim.muzzle).with_scale(Vec3::splat(0.58)),
+            ));
+            let volume = (0.19 - aim.distance * 0.003).clamp(0.06, 0.19);
+            audio::play_game(&mut commands, sounds.enemy_shot(), volume, 1.34);
+            fired.write(RoundFired {
+                shooter: aim.shooter,
+                burst_spent: false,
+            });
+            continue;
+        }
         if aim.acquired {
             rifle.phase = AttackPhase::Burst;
             rifle.shots_left = rifle.burst;
@@ -173,5 +213,77 @@ pub fn fire_rifles(
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::enemy::evolution::Genome;
+
+    #[test]
+    fn evolutionary_trigger_has_no_reload_and_is_limited_to_three_hundred_ms() {
+        let mut app = App::new();
+        app.insert_resource(Time::<()>::default())
+            .insert_resource(Visuals::default())
+            .insert_resource(SoundBank::default())
+            .add_message::<RifleAim>()
+            .add_message::<RoundFired>()
+            .add_systems(Update, fire_rifles);
+        let mut weights = [0.0; crate::enemy::evolution::WEIGHTS];
+        weights[0] = 1.0;
+        let shooter = app
+            .world_mut()
+            .spawn((
+                Rifle::from_spec(crate::character::scout().rifle(), 0.0),
+                EvolutionBot::new(Genome { weights }, Vec3::ZERO),
+            ))
+            .id();
+        let aim = RifleAim {
+            shooter,
+            acquired: false,
+            look: Look::Clear,
+            muzzle: Vec3::ZERO,
+            direction: Vec3::Z,
+            distance: 5.0,
+        };
+
+        app.world_mut().write_message(aim);
+        app.update();
+        assert_eq!(projectile_count(&mut app), 1);
+        let (projectile, damage, transform) = app
+            .world_mut()
+            .query::<(&Projectile, &Damage, &Transform)>()
+            .single(app.world())
+            .unwrap();
+        assert_eq!(damage.0, crate::character::scout().rifle().damage);
+        assert_eq!(
+            projectile.radius,
+            crate::character::scout().rifle().round_radius
+        );
+        assert_eq!(transform.scale, Vec3::splat(0.58));
+
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_millis(299));
+        app.world_mut().write_message(aim);
+        app.update();
+        assert_eq!(projectile_count(&mut app), 1);
+
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_millis(1));
+        app.world_mut().write_message(aim);
+        app.update();
+        assert_eq!(projectile_count(&mut app), 2);
+    }
+
+    fn projectile_count(app: &mut App) -> usize {
+        app.world_mut()
+            .query::<&Projectile>()
+            .iter(app.world())
+            .count()
     }
 }

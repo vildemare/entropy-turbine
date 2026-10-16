@@ -10,6 +10,7 @@ use bevy::{prelude::*, window::PrimaryWindow};
 
 use super::Cover;
 use super::grenadier::Grenadier;
+use crate::combat::BlastRecovery;
 use crate::player::Player;
 use crate::session::{Phase, Session};
 use crate::world::camera::{self, FollowCamera};
@@ -259,65 +260,241 @@ fn overlaps(position: Vec3, radius: f32, block: &Footprint) -> bool {
     offset.length_squared() < radius * radius
 }
 
-/// One step of a cow along its lane, bending toward the clearer side of a
-/// barricade that sits in the way.
+const TRACK_LOOK_AHEAD: f32 = 14.0;
+const TRACK_CLEARANCE: f32 = 0.65;
+
+/// A committed route around cover. The bot first reaches the near-side
+/// waypoint, then holds the same side until it clears the far edge.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TrackAvoidance {
+    side: f32,
+    pass_offset: f32,
+    entry_z: f32,
+    clear_z: f32,
+    passing: bool,
+}
+
+/// One step of a cow along its lane. Obstacle avoidance is kept across frames
+/// so returning to the lane cannot pull the cow back into cover mid-pass.
 pub(crate) fn step_tracks(
     position: Vec3,
     radius: f32,
-    lane_x: f32,
+    lane_offset: f32,
     side: f32,
     distance: f32,
     blocks: &[Footprint],
+    avoidance: &mut Option<TrackAvoidance>,
 ) -> (Vec3, f32) {
-    let Some(block) = obstacle_ahead(position, radius, blocks) else {
-        let wander = (position.z * 0.45).sin() * 2.2;
-        let lateral = (lane_x + wander - position.x).clamp(-6.0, 6.0);
-        let forward = Vec3::new(lateral * 0.45, 0.0, 1.0).normalize();
-        return (position + forward * distance, side);
-    };
-    let preferred = clearer_side(position, block, radius, side);
-    for chosen in [preferred, -preferred] {
-        let pass_x = route::clamp_actor_x(
-            block.center.x + chosen * (block.half_width + radius + 1.1),
-            block.center.z,
-            radius,
-        );
-        let aim_z = (block.center.z - position.z).max(1.2);
-        let direction = Vec3::new(pass_x - position.x, 0.0, aim_z).normalize();
-        let next = position + direction * distance;
-        if !tracks_blocked(next, radius, blocks) {
-            return (next, chosen);
+    if distance <= 0.0 {
+        return (position, side);
+    }
+    if avoidance.is_none() {
+        let look_z = position.z + TRACK_LOOK_AHEAD;
+        let look_x = route::centerline_x(look_z) + lane_offset + (look_z * 0.45).sin() * 2.2;
+        if let Some(block) = obstacle_on_segment(
+            position,
+            Vec3::new(look_x, position.y, look_z),
+            radius + 0.25,
+            blocks,
+        ) {
+            *avoidance = plan_track_avoidance(position, radius, side, block, blocks);
         }
     }
-    (position, -side)
+
+    if let Some(path) = avoidance.as_mut() {
+        let target_z = if path.passing {
+            path.clear_z
+        } else {
+            path.entry_z
+        };
+        let target = Vec3::new(
+            route::centerline_x(target_z) + path.pass_offset,
+            position.y,
+            target_z,
+        );
+        let delta = target - position;
+        let next = if delta.length() <= distance {
+            target
+        } else {
+            position + delta.normalize() * distance
+        };
+        if tracks_blocked(next, radius, blocks) {
+            let other_side = -path.side;
+            *avoidance = None;
+            return (position, other_side);
+        }
+        let chosen = path.side;
+        if delta.length() <= distance + 1.0e-4 {
+            if path.passing {
+                *avoidance = None;
+            } else {
+                path.passing = true;
+            }
+        }
+        return (next, chosen);
+    }
+
+    let target_z = position.z + 6.0;
+    let target_x = route::centerline_x(target_z) + lane_offset + (position.z * 0.45).sin() * 2.2;
+    let lateral = (target_x - position.x).clamp(-6.0, 6.0);
+    let forward = Vec3::new(lateral * 0.45, 0.0, 1.0).normalize();
+    (position + forward * distance, side)
 }
 
-/// The nearest cover the cow would clip if it kept its current line, looked up
-/// early enough that the side-step reads as a turn rather than a shove.
-fn obstacle_ahead<'a>(
-    position: Vec3,
-    radius: f32,
+fn obstacle_on_segment<'a>(
+    from: Vec3,
+    to: Vec3,
+    padding: f32,
     blocks: &'a [Footprint],
 ) -> Option<&'a Footprint> {
-    let look = 14.0;
-    let margin = radius + 1.4;
     blocks
         .iter()
-        .filter(|block| {
-            let front = block.center.z - block.half_depth;
-            let back = block.center.z + block.half_depth;
-            if back < position.z - 0.2 || front > position.z + look {
-                return false;
+        .filter_map(|block| segment_block_t(from, to, block, padding).map(|time| (time, block)))
+        .min_by(|(left, _), (right, _)| left.total_cmp(right))
+        .map(|(_, block)| block)
+}
+
+fn plan_track_avoidance(
+    position: Vec3,
+    radius: f32,
+    prefer: f32,
+    obstacle: &Footprint,
+    blocks: &[Footprint],
+) -> Option<TrackAvoidance> {
+    let preferred = clearer_side(position, obstacle, radius, prefer);
+    let left = track_candidate(position, radius, -1.0, obstacle, blocks);
+    let right = track_candidate(position, radius, 1.0, obstacle, blocks);
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            let left_score =
+                track_path_length(position, left) + if preferred < 0.0 { 0.0 } else { 0.35 };
+            let right_score =
+                track_path_length(position, right) + if preferred > 0.0 { 0.0 } else { 0.35 };
+            Some(if left_score <= right_score {
+                left
+            } else {
+                right
+            })
+        }
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    }
+}
+
+fn track_candidate(
+    position: Vec3,
+    radius: f32,
+    side: f32,
+    obstacle: &Footprint,
+    blocks: &[Footprint],
+) -> Option<TrackAvoidance> {
+    let padding = radius + TRACK_CLEARANCE;
+    let mut pass_offset = local_edge(obstacle, side, padding);
+    let mut entry_z = obstacle.center.z - obstacle.half_depth - padding;
+    let mut clear_z = obstacle.center.z + obstacle.half_depth + padding;
+
+    for _ in 0..=blocks.len() {
+        if pass_offset.abs() > route::ROAD_HALF_WIDTH - radius - 0.1 {
+            return None;
+        }
+        let entry = Vec3::new(
+            route::centerline_x(entry_z) + pass_offset,
+            position.y,
+            entry_z,
+        );
+        let exit = Vec3::new(
+            route::centerline_x(clear_z) + pass_offset,
+            position.y,
+            clear_z,
+        );
+        if !segment_stays_on_road(position, entry, radius)
+            || !segment_stays_on_road(entry, exit, radius)
+        {
+            return None;
+        }
+        let blocker = blocks.iter().find(|block| {
+            segment_block_t(position, entry, block, radius + 0.2).is_some()
+                || segment_block_t(entry, exit, block, radius + 0.2).is_some()
+        });
+        let Some(blocker) = blocker else {
+            return Some(TrackAvoidance {
+                side,
+                pass_offset,
+                entry_z,
+                clear_z,
+                passing: position.z >= entry_z,
+            });
+        };
+        let expanded = local_edge(blocker, side, padding);
+        pass_offset = if side > 0.0 {
+            pass_offset.max(expanded)
+        } else {
+            pass_offset.min(expanded)
+        };
+        entry_z = entry_z.min(blocker.center.z - blocker.half_depth - padding);
+        clear_z = clear_z.max(blocker.center.z + blocker.half_depth + padding);
+    }
+    None
+}
+
+fn local_edge(block: &Footprint, side: f32, padding: f32) -> f32 {
+    block.center.x - route::centerline_x(block.center.z)
+        + side.signum() * (block.half_width + padding)
+}
+
+fn track_path_length(position: Vec3, path: TrackAvoidance) -> f32 {
+    let entry = Vec2::new(
+        route::centerline_x(path.entry_z) + path.pass_offset,
+        path.entry_z,
+    );
+    let exit = Vec2::new(
+        route::centerline_x(path.clear_z) + path.pass_offset,
+        path.clear_z,
+    );
+    Vec2::new(position.x, position.z).distance(entry) + entry.distance(exit)
+}
+
+fn segment_stays_on_road(from: Vec3, to: Vec3, radius: f32) -> bool {
+    (0..=8).all(|step| {
+        let t = step as f32 / 8.0;
+        let point = from.lerp(to, t);
+        (point.x - route::centerline_x(point.z)).abs() <= route::ROAD_HALF_WIDTH - radius - 0.05
+    })
+}
+
+fn segment_block_t(from: Vec3, to: Vec3, block: &Footprint, padding: f32) -> Option<f32> {
+    let start = Vec2::new(from.x, from.z);
+    let delta = Vec2::new(to.x - from.x, to.z - from.z);
+    let min = Vec2::new(
+        block.center.x - block.half_width - padding,
+        block.center.z - block.half_depth - padding,
+    );
+    let max = Vec2::new(
+        block.center.x + block.half_width + padding,
+        block.center.z + block.half_depth + padding,
+    );
+    let mut near = 0.0_f32;
+    let mut far = 1.0_f32;
+    for (origin, movement, low, high) in [
+        (start.x, delta.x, min.x, max.x),
+        (start.y, delta.y, min.y, max.y),
+    ] {
+        if movement.abs() < 1.0e-6 {
+            if origin < low || origin > high {
+                return None;
             }
-            let left = block.center.x - block.half_width - margin;
-            let right = block.center.x + block.half_width + margin;
-            position.x > left && position.x < right
-        })
-        .min_by(|a, b| {
-            let da = a.center.z - a.half_depth - position.z;
-            let db = b.center.z - b.half_depth - position.z;
-            da.total_cmp(&db)
-        })
+            continue;
+        }
+        let first = (low - origin) / movement;
+        let second = (high - origin) / movement;
+        near = near.max(first.min(second));
+        far = far.min(first.max(second));
+        if near > far {
+            return None;
+        }
+    }
+    (far >= 0.0 && near <= 1.0).then_some(near.max(0.0))
 }
 
 fn clearer_side(position: Vec3, block: &Footprint, radius: f32, prefer: f32) -> f32 {
@@ -448,7 +625,10 @@ pub fn walk_grenadiers(
     windows: Query<&Window, With<PrimaryWindow>>,
     covers: Query<(&Transform, &Cover), Without<Grenadier>>,
     mut holds: MessageReader<WalkerHold>,
-    mut walkers: Query<(Entity, &mut Transform, &mut WalkerHeading, &Grenadier), Without<Player>>,
+    mut walkers: Query<
+        (Entity, &mut Transform, &mut WalkerHeading, &Grenadier),
+        (Without<Player>, Without<BlastRecovery>),
+    >,
 ) {
     if session.phase != Phase::Playing {
         return;

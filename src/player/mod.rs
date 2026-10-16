@@ -203,6 +203,7 @@ pub struct GunslingerWeapon {
     pub drums: [RevolverDrum; 2],
     next_gun: usize,
     next_reload_gun: usize,
+    dry_trigger_latched: bool,
 }
 
 impl Default for GunslingerWeapon {
@@ -221,6 +222,7 @@ impl Default for GunslingerWeapon {
             ],
             next_gun: 0,
             next_reload_gun: 0,
+            dry_trigger_latched: false,
         }
     }
 }
@@ -238,6 +240,7 @@ impl GunslingerWeapon {
         self.reload_remaining = Duration::from_millis(self.reload_wait_ms as u64);
         self.recharging = false;
         self.waiting_for_loader = false;
+        self.dry_trigger_latched = false;
     }
 
     pub fn apply_stats(&mut self, stats: PlayerStats) {
@@ -270,9 +273,12 @@ impl GunslingerWeapon {
         }
     }
 
-    fn advance_reload(&mut self, delta: Duration) {
+    /// Advances the loader and reports the transition to a completely full
+    /// pair of cylinders.
+    fn advance_reload(&mut self, delta: Duration) -> bool {
+        let was_full = self.rounds == self.capacity;
         if !self.waiting_for_loader && !self.recharging {
-            return;
+            return false;
         }
         let chamber = crate::character::gunslinger().revolver().quickload_chamber;
         let mut delta = delta;
@@ -295,6 +301,7 @@ impl GunslingerWeapon {
         if self.waiting_for_loader || self.recharging {
             self.reload_remaining -= delta;
         }
+        !was_full && self.rounds == self.capacity
     }
 
     fn fire_round(&mut self) -> Option<usize> {
@@ -325,6 +332,7 @@ impl GunslingerWeapon {
             }
             other
         };
+        self.drums[gun].spin_steps += 1;
         self.rounds += 1;
         self.next_reload_gun = 1 - gun;
     }
@@ -484,21 +492,49 @@ pub fn shoot(
     }
     for (entity, transform, intent, mut cooldown, mut weapon) in &mut players {
         cooldown.0 = cooldown.0.saturating_sub(time.delta());
-        if !intent.firing || cooldown.0 > Duration::ZERO || !weapon.can_fire() {
-            weapon.advance_reload(time.delta());
+        if !intent.firing {
+            weapon.dry_trigger_latched = false;
+            if weapon.advance_reload(time.delta()) {
+                audio::play_game(&mut commands, &sounds.cylinder_full, 0.30, 1.0);
+            }
+            continue;
+        }
+        if cooldown.0 > Duration::ZERO {
+            if weapon.advance_reload(time.delta()) {
+                audio::play_game(&mut commands, &sounds.cylinder_full, 0.30, 1.0);
+            }
+            continue;
+        }
+        if !weapon.can_fire() {
+            if weapon.rounds == 0 && !weapon.dry_trigger_latched {
+                audio::play_game(&mut commands, &sounds.empty_click, 0.34, 1.0);
+                weapon.dry_trigger_latched = true;
+            }
+            if weapon.advance_reload(time.delta()) {
+                audio::play_game(&mut commands, &sounds.cylinder_full, 0.30, 1.0);
+            }
             continue;
         }
         let mut direction = intent.aim - transform.translation;
         direction.y = 0.0;
         let direction = direction.normalize_or_zero();
         if direction == Vec3::ZERO {
-            weapon.advance_reload(time.delta());
+            if weapon.advance_reload(time.delta()) {
+                audio::play_game(&mut commands, &sounds.cylinder_full, 0.30, 1.0);
+            }
             continue;
         }
         let Some(gun) = weapon.fire_round() else {
-            weapon.advance_reload(time.delta());
+            if !weapon.dry_trigger_latched {
+                audio::play_game(&mut commands, &sounds.empty_click, 0.34, 1.0);
+                weapon.dry_trigger_latched = true;
+            }
+            if weapon.advance_reload(time.delta()) {
+                audio::play_game(&mut commands, &sounds.cylinder_full, 0.30, 1.0);
+            }
             continue;
         };
+        weapon.dry_trigger_latched = weapon.rounds == 0;
         let revolver = crate::character::gunslinger().revolver();
         cooldown.0 = revolver.fire_interval;
         let side = if gun == 0 { -1.0 } else { 1.0 };
@@ -518,6 +554,7 @@ pub fn shoot(
                     owner: entity,
                 },
                 Damage(revolver.projectile_damage),
+                crate::combat::Ricochet(2),
                 Lifetime(revolver.projectile_lifetime.as_secs_f32()),
                 Mesh3d(visuals.player_bullet_mesh.clone()),
                 MeshMaterial3d(visuals.bullet_material.clone()),
@@ -671,14 +708,72 @@ mod tests {
         weapon.advance_reload(Duration::from_millis(1));
         assert!(weapon.recharging);
         assert!(!weapon.can_fire());
-        weapon.advance_reload(Duration::from_millis(
-            5 * crate::character::gunslinger()
-                .revolver()
-                .quickload_chamber
-                .as_millis() as u64,
-        ));
+        assert!(
+            weapon.advance_reload(Duration::from_millis(
+                5 * crate::character::gunslinger()
+                    .revolver()
+                    .quickload_chamber
+                    .as_millis() as u64,
+            ))
+        );
         assert_eq!(weapon.rounds, weapon.capacity);
         assert!(weapon.can_fire());
+        assert!(!weapon.advance_reload(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn an_empty_held_trigger_clicks_only_once_until_released() {
+        let mut app = App::new();
+        app.insert_resource(Time::<()>::default())
+            .insert_resource(Session::default())
+            .insert_resource(Visuals::default())
+            .insert_resource(SoundBank::default())
+            .add_systems(Update, shoot);
+        let mut weapon = GunslingerWeapon::default();
+        for drum in &mut weapon.drums {
+            drum.chambers.fill(false);
+        }
+        weapon.rounds = 0;
+        weapon.recharging = true;
+        weapon.waiting_for_loader = true;
+        let player = app
+            .world_mut()
+            .spawn((
+                Player,
+                PlayerIntent {
+                    aim: Vec3::NEG_Z,
+                    firing: true,
+                    ..default()
+                },
+                FireCooldown(Duration::ZERO),
+                weapon,
+                Transform::from_xyz(0.0, PLAYER_Y, 0.0),
+            ))
+            .id();
+
+        app.update();
+        assert_eq!(gameplay_audio_count(&mut app), 1);
+        app.update();
+        assert_eq!(gameplay_audio_count(&mut app), 1);
+
+        app.world_mut()
+            .get_mut::<PlayerIntent>(player)
+            .unwrap()
+            .firing = false;
+        app.update();
+        app.world_mut()
+            .get_mut::<PlayerIntent>(player)
+            .unwrap()
+            .firing = true;
+        app.update();
+        assert_eq!(gameplay_audio_count(&mut app), 2);
+    }
+
+    fn gameplay_audio_count(app: &mut App) -> usize {
+        app.world_mut()
+            .query_filtered::<Entity, With<crate::audio::GameplayAudio>>()
+            .iter(app.world())
+            .count()
     }
 
     #[test]
@@ -748,7 +843,9 @@ mod tests {
             app.world_mut()
                 .query::<(&Projectile, &Damage)>()
                 .iter(app.world())
-                .all(|(_, damage)| damage.0 == 2)
+                .all(|(_, damage)| {
+                    damage.0 == crate::character::gunslinger().revolver().projectile_damage
+                })
         );
         shots.sort_by(f32::total_cmp);
         assert!(shots[0] < -0.3 && shots[11] > 0.3);

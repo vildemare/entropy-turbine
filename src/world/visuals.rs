@@ -19,13 +19,13 @@ pub struct Visuals {
     pub blast_ring_mesh: Handle<Mesh>,
     pub bullet_material: Handle<StandardMaterial>,
     pub enemy_bullet_material: Handle<StandardMaterial>,
+    pub evolution_bullet_material: Handle<StandardMaterial>,
     pub zap_bolt_material: Handle<StandardMaterial>,
     pub grenade_material: Handle<StandardMaterial>,
     pub blast_mark_material: Handle<StandardMaterial>,
     pub barricade_mesh: Handle<Mesh>,
     pub barricade_material: Handle<StandardMaterial>,
-    pub rubble_mesh: Handle<Mesh>,
-    pub rubble_material: Handle<StandardMaterial>,
+    pub rubble_scene: Handle<WorldAsset>,
     pub orb_mesh: Handle<Mesh>,
     pub orb_material: Handle<StandardMaterial>,
     pub checkpoint_mesh: Handle<Mesh>,
@@ -35,7 +35,11 @@ pub struct Visuals {
 /// Length of the zap jolt mesh along local +Z. The projectile sits at the tail.
 pub const ZAP_BOLT_LENGTH: f32 = 4.0;
 
-pub fn load(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>) -> Visuals {
+pub fn load(
+    asset_server: &AssetServer,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+) -> Visuals {
     Visuals {
         enemy_part_mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
         scout_material: materials.add(Color::srgb(0.40, 0.22, 0.12)),
@@ -57,6 +61,12 @@ pub fn load(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>)
             ..default()
         }),
         enemy_bullet_material: materials.add(Color::srgb(0.88, 0.19, 0.07)),
+        evolution_bullet_material: materials.add(StandardMaterial {
+            base_color: Color::srgb(1.0, 0.83, 0.12),
+            emissive: LinearRgba::new(5.0, 2.6, 0.08, 1.0),
+            unlit: true,
+            ..default()
+        }),
         zap_bolt_material: materials.add(StandardMaterial {
             base_color: Color::srgb(1.0, 0.84, 0.45),
             emissive: LinearRgba::new(6.0, 2.2, 0.35, 1.0),
@@ -77,8 +87,8 @@ pub fn load(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>)
         }),
         barricade_mesh: meshes.add(Cuboid::new(5.4, 1.1, 1.0)),
         barricade_material: materials.add(Color::srgb(0.20, 0.17, 0.13)),
-        rubble_mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
-        rubble_material: materials.add(Color::srgb(0.27, 0.23, 0.18)),
+        rubble_scene: asset_server
+            .load(GltfAssetLabel::Scene(0).from_asset("models/rubble_cluster.glb")),
         orb_mesh: meshes.add(Sphere::new(0.32)),
         orb_material: materials.add(Color::srgb(0.95, 0.65, 0.18)),
         checkpoint_mesh: meshes.add(Cuboid::new(25.0, 0.08, 0.4)),

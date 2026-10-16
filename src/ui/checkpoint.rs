@@ -9,7 +9,9 @@ use bevy::ui_widgets::Button;
 
 use crate::audio::{self, SoundBank};
 use crate::combat::Projectile;
-use crate::enemy::{Drift, EncounterDirector, Enemy, Grenadier, VolleyPiece, ZapBot};
+use crate::enemy::{
+    Drift, EncounterDirector, Enemy, EvolutionBot, EvolutionLab, Grenadier, VolleyPiece, ZapBot,
+};
 use crate::player::{
     self, GunslingerWeapon, PLAYER_Y, Player, PlayerProgression, PlayerStats, reload_wait_ms_for,
 };
@@ -254,6 +256,7 @@ pub fn place_checkpoint_line(
 pub fn cross_checkpoint(
     mut session: ResMut<Session>,
     director: Res<EncounterDirector>,
+    mut evolution: ResMut<EvolutionLab>,
     mut time: ResMut<Time<Virtual>>,
     mut commands: Commands,
     players: Query<&Transform, With<Player>>,
@@ -262,6 +265,7 @@ pub fn cross_checkpoint(
     grenadiers: Query<Entity, With<Grenadier>>,
     volleys: Query<Entity, With<VolleyPiece>>,
     bullets: Query<Entity, With<Projectile>>,
+    mut bots: Query<&mut EvolutionBot>,
 ) {
     if session.phase != Phase::Playing {
         return;
@@ -270,6 +274,9 @@ pub fn cross_checkpoint(
         return;
     };
     if players.iter().any(|player| player.translation.z <= z) {
+        for mut bot in &mut bots {
+            evolution.record_survivor(&mut bot);
+        }
         for entity in enemies
             .iter()
             .chain(zaps.iter())
@@ -288,12 +295,14 @@ pub fn cross_checkpoint(
 pub fn handle_checkpoint_button(
     mut session: ResMut<Session>,
     mut director: ResMut<EncounterDirector>,
+    mut evolution: ResMut<EvolutionLab>,
     mut time: ResMut<Time<Virtual>>,
     sounds: Res<SoundBank>,
     mut commands: Commands,
     lines: Query<Entity, With<CheckpointLine>>,
     mut refresh: MessageWriter<player::GearRefresh>,
     players: Query<&PlayerProgression, With<Player>>,
+    bots: Query<&mut EvolutionBot>,
     mut colors: Query<(&Hovered, Has<Pressed>, &mut BackgroundColor), With<CheckpointContinue>>,
     pressed: Query<(), (Added<Pressed>, With<CheckpointContinue>)>,
 ) {
@@ -316,6 +325,7 @@ pub fn handle_checkpoint_button(
     if players.iter().next().is_some() {
         refresh.write(player::GearRefresh { refill: true });
     }
+    evolution.advance_generation(bots.into_iter());
     director.next_phase();
     session.phase = Phase::Playing;
     session.suppress_fire_until_release = true;
@@ -413,6 +423,7 @@ mod tests {
             ..default()
         })
         .insert_resource(EncounterDirector::default())
+        .insert_resource(EvolutionLab::default())
         .insert_resource(Time::<Virtual>::default())
         .insert_resource(SoundBank::default())
         .add_message::<player::GearRefresh>()
@@ -604,6 +615,7 @@ mod tests {
         director.checkpoint_z = Some(-10.0);
         app.insert_resource(Session::default())
             .insert_resource(director)
+            .insert_resource(EvolutionLab::default())
             .insert_resource(Time::<Virtual>::default())
             .add_systems(Update, cross_checkpoint);
         app.world_mut()

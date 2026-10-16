@@ -3,8 +3,9 @@
 //! A definition is the body, the movement, the weapons, and the abilities.
 //! Spawn copies those onto an entity. Live timers, position, and remaining
 //! health stay on the entity. Speeds and sizes are the floats Bevy moves and
-//! draws with. Waits are [`Duration`]s. Health, damage, armor, shields,
-//! rewards, and counts stay integers.
+//! draws with. Waits are [`Duration`]s. Health, damage, armor, and shields use
+//! the same integer scale, where the Gunslinger starts with 1000 health.
+//! Rewards and counts are separate, unscaled integers.
 //!
 //! Cover gait and retreat live with the gunners. The walker's path and the
 //! cow's lane step live with the other locomotion. They read the blueprint
@@ -389,8 +390,8 @@ pub fn gunslinger() -> &'static CharacterDefinition {
                 min_reload: Duration::from_millis(150),
                 quickload_chamber: Duration::from_millis(60),
                 projectile_speed: 45.3,
-                projectile_lifetime: Duration::from_millis(1_125),
-                projectile_damage: 2,
+                projectile_lifetime: Duration::from_millis(1125),
+                projectile_damage: 200,
                 projectile_radius: 0.113,
                 projectile_scale: 0.667,
                 pair_spread: 0.009,
@@ -407,17 +408,17 @@ pub fn gunslinger() -> &'static CharacterDefinition {
 
 pub fn scout() -> &'static CharacterDefinition {
     static DEFINITION: OnceLock<CharacterDefinition> = OnceLock::new();
-    DEFINITION.get_or_init(|| machine(CharacterId::Scout, scout_body(), 3.7, 150, 1_150))
+    DEFINITION.get_or_init(|| machine(CharacterId::Scout, scout_body(), 3.7, 150, 1150))
 }
 
 pub fn trooper() -> &'static CharacterDefinition {
     static DEFINITION: OnceLock<CharacterDefinition> = OnceLock::new();
-    DEFINITION.get_or_init(|| machine(CharacterId::Trooper, trooper_body(), 3.0, 200, 1_550))
+    DEFINITION.get_or_init(|| machine(CharacterId::Trooper, trooper_body(), 3.0, 200, 1550))
 }
 
 pub fn heavy() -> &'static CharacterDefinition {
     static DEFINITION: OnceLock<CharacterDefinition> = OnceLock::new();
-    DEFINITION.get_or_init(|| machine(CharacterId::Heavy, heavy_body(), 2.1, 300, 1_950))
+    DEFINITION.get_or_init(|| machine(CharacterId::Heavy, heavy_body(), 2.1, 300, 1950))
 }
 
 pub fn zap_bot() -> &'static CharacterDefinition {
@@ -425,7 +426,7 @@ pub fn zap_bot() -> &'static CharacterDefinition {
     DEFINITION.get_or_init(|| {
         CharacterBuilder::new(CharacterId::ZapBot)
             .body(BodySpec::Machine {
-                health: 2,
+                health: 600,
                 reward: 1,
                 radius: 0.9,
                 height: 0.46,
@@ -434,14 +435,14 @@ pub fn zap_bot() -> &'static CharacterDefinition {
             .movement(MovementSpec::Tracks { max_speed: 1.5 })
             .weapon(WeaponSpec::Zapper(ZapperSpec {
                 damage: 120,
-                charge: Duration::from_millis(1_500),
+                charge: Duration::from_millis(1500),
                 rest: Duration::from_millis(450),
                 bolt_speed: 24.0,
                 reach: 8.0,
                 bolt_radius: 0.34,
             }))
             .ability(AbilitySpec::StopAlliedShots)
-            .ability(AbilitySpec::Plate(1))
+            .ability(AbilitySpec::Plate(100))
             .ability(AbilitySpec::HitPoints)
             .build()
     })
@@ -452,7 +453,7 @@ pub fn grenadier() -> &'static CharacterDefinition {
     DEFINITION.get_or_init(|| {
         CharacterBuilder::new(CharacterId::Grenadier)
             .body(BodySpec::Machine {
-                health: 4,
+                health: 800,
                 reward: 3,
                 radius: 1.35,
                 height: 0.95,
@@ -474,7 +475,7 @@ pub fn grenadier() -> &'static CharacterDefinition {
             }))
             .ability(AbilitySpec::StopAlliedShots)
             .ability(AbilitySpec::Shield {
-                amount: 4,
+                amount: 1_600,
                 down_for: Duration::from_secs(4),
             })
             .ability(AbilitySpec::HitPoints)
@@ -507,7 +508,7 @@ fn machine(
 
 fn scout_body() -> BodySpec {
     BodySpec::Machine {
-        health: 3,
+        health: 300,
         reward: 1,
         radius: 0.44,
         height: 0.54,
@@ -517,7 +518,7 @@ fn scout_body() -> BodySpec {
 
 fn trooper_body() -> BodySpec {
     BodySpec::Machine {
-        health: 6,
+        health: 600,
         reward: 2,
         radius: 0.56,
         height: 0.68,
@@ -527,7 +528,7 @@ fn trooper_body() -> BodySpec {
 
 fn heavy_body() -> BodySpec {
     BodySpec::Machine {
-        health: 15,
+        health: 1_500,
         reward: 4,
         radius: 0.73,
         height: 0.83,

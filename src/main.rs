@@ -37,6 +37,7 @@ fn main() {
             ..default()
         })
         .init_resource::<enemy::EncounterDirector>()
+        .init_resource::<enemy::EvolutionLab>()
         .add_message::<ability::Struck>()
         .add_message::<ability::Notice>()
         .add_message::<enemy::RifleAim>()
@@ -58,6 +59,7 @@ fn main() {
         .add_systems(
             Update,
             (
+                enemy::reset_lineage_on_restart,
                 startup::restart,
                 ui::pause::toggle_pause,
                 ui::cursor::move_captured_pointer,
@@ -93,6 +95,12 @@ fn main() {
         )
         .add_systems(
             Update,
+            combat::recover_blast_displacements
+                .after(enemy::spawn_zap_bots)
+                .before(enemy::move_enemies),
+        )
+        .add_systems(
+            Update,
             (
                 (
                     enemy::cleanup_behind_camera,
@@ -108,17 +116,23 @@ fn main() {
                     enemy::fly_grenades,
                     combat::resolve_hits,
                     combat::deliver_hits,
+                    shield::flash_hits,
                     enemy::credit_hits,
+                    enemy::credit_lineage_hits,
+                    enemy::observe_lineage,
+                    enemy::record_lineage_deaths,
                     combat::present_notices,
                 )
                     .chain(),
                 (
                     combat::bloom_bursts,
+                    combat::fade_combat_flashes,
                     combat::collect_orbs,
                     combat::expire_projectiles,
                     world::route::follow_route,
                     ui::checkpoint::cross_checkpoint,
                     ui::update_hud,
+                    enemy::paint_gene_hud,
                 )
                     .chain(),
             )
